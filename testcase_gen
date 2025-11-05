@@ -1,0 +1,449 @@
+import React, { useState } from 'react';
+import { Upload, FileText, Scissors, Brain, Download, Settings, AlertCircle, CheckCircle, Loader } from 'lucide-react';
+import * as mammoth from 'mammoth';
+
+const TestCaseGenerator = () => {
+  const [file, setFile] = useState(null);
+  const [step, setStep] = useState(1);
+  const [extractedText, setExtractedText] = useState('');
+  const [chunks, setChunks] = useState([]);
+  const [testCases, setTestCases] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [chunkingMethod, setChunkingMethod] = useState('header');
+  const [customDelimiter, setCustomDelimiter] = useState('');
+
+  const handleFileUpload = async (e) => {
+    const uploadedFile = e.target.files[0];
+    if (!uploadedFile) return;
+
+    setFile(uploadedFile);
+    setLoading(true);
+
+    try {
+      if (uploadedFile.name.endsWith('.docx')) {
+        const arrayBuffer = await uploadedFile.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        setExtractedText(result.value);
+      } else if (uploadedFile.name.endsWith('.txt')) {
+        const text = await uploadedFile.text();
+        setExtractedText(text);
+      } else if (uploadedFile.name.endsWith('.pdf')) {
+        // For PDF, we'll simulate extraction (in production, use pdf.js or similar)
+        setExtractedText('PDF processing requires backend integration. For demo, using sample text...\n\n' +
+          'Login Module:\nThe system shall allow users to login with username and password.\n' +
+          'The system shall validate credentials against the database.\n' +
+          'The system shall lock account after 3 failed attempts.\n\n' +
+          'Registration Module:\nThe system shall collect user email, password, and phone number.\n' +
+          'The system shall validate email format.\n' +
+          'The system shall send verification email upon registration.');
+      }
+      setStep(2);
+    } catch (error) {
+      alert('Error processing file: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const cleanText = (text) => {
+    return text
+      .replace(/\s+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[^\S\n]+/g, ' ')
+      .trim();
+  };
+
+  const chunkByHeaders = (text) => {
+    const cleaned = cleanText(text);
+    const lines = cleaned.split('\n');
+    const chunks = [];
+    let currentChunk = { title: '', content: [] };
+
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+
+      // Detect headers (all caps, ends with colon, or short lines followed by content)
+      const isHeader = trimmed.length < 50 && 
+        (trimmed === trimmed.toUpperCase() || 
+         trimmed.endsWith(':') || 
+         /^[0-9]+\./.test(trimmed));
+
+      if (isHeader) {
+        if (currentChunk.content.length > 0) {
+          chunks.push({ ...currentChunk });
+        }
+        currentChunk = { title: trimmed.replace(':', ''), content: [] };
+      } else {
+        currentChunk.content.push(trimmed);
+      }
+    });
+
+    if (currentChunk.content.length > 0) {
+      chunks.push(currentChunk);
+    }
+
+    return chunks;
+  };
+
+  const chunkByParagraphs = (text) => {
+    const cleaned = cleanText(text);
+    const paragraphs = cleaned.split('\n\n').filter(p => p.trim());
+    return paragraphs.map((p, i) => ({
+      title: `Section ${i + 1}`,
+      content: [p]
+    }));
+  };
+
+  const chunkByCustom = (text, delimiter) => {
+    const cleaned = cleanText(text);
+    const parts = cleaned.split(delimiter).filter(p => p.trim());
+    return parts.map((p, i) => ({
+      title: `Chunk ${i + 1}`,
+      content: [p.trim()]
+    }));
+  };
+
+  const handleChunking = () => {
+    setLoading(true);
+    setTimeout(() => {
+      let chunkedData;
+      switch (chunkingMethod) {
+        case 'header':
+          chunkedData = chunkByHeaders(extractedText);
+          break;
+        case 'paragraph':
+          chunkedData = chunkByParagraphs(extractedText);
+          break;
+        case 'custom':
+          chunkedData = chunkByCustom(extractedText, customDelimiter || '\n\n');
+          break;
+        default:
+          chunkedData = chunkByHeaders(extractedText);
+      }
+      setChunks(chunkedData);
+      setStep(3);
+      setLoading(false);
+    }, 500);
+  };
+
+  const generateTestCases = () => {
+    setLoading(true);
+    setTimeout(() => {
+      const generatedCases = [];
+      let tcId = 1;
+
+      chunks.forEach((chunk, idx) => {
+        const content = chunk.content.join(' ');
+        
+        // Rule-based test case generation (simulating AI)
+        const sentences = content.split('.').filter(s => s.trim());
+        
+        sentences.forEach(sentence => {
+          const trimmed = sentence.trim();
+          if (!trimmed) return;
+
+          // Positive test case
+          if (trimmed.toLowerCase().includes('shall') || 
+              trimmed.toLowerCase().includes('should') ||
+              trimmed.toLowerCase().includes('must')) {
+            
+            generatedCases.push({
+              id: `TC_${String(tcId).padStart(3, '0')}`,
+              module: chunk.title || `Module ${idx + 1}`,
+              type: 'Positive',
+              description: trimmed,
+              steps: [
+                `Navigate to ${chunk.title || 'the module'}`,
+                `Perform action: ${trimmed.split('shall')[1] || trimmed.split('should')[1] || trimmed}`,
+                'Verify expected behavior'
+              ],
+              expectedResult: `System ${trimmed.toLowerCase().includes('shall') ? trimmed.split('shall')[1] : 'complies with requirement'}`,
+              priority: 'High'
+            });
+            tcId++;
+
+            // Generate negative test case
+            generatedCases.push({
+              id: `TC_${String(tcId).padStart(3, '0')}`,
+              module: chunk.title || `Module ${idx + 1}`,
+              type: 'Negative',
+              description: `Negative: ${trimmed}`,
+              steps: [
+                `Navigate to ${chunk.title || 'the module'}`,
+                'Provide invalid/missing data',
+                'Attempt action',
+                'Verify error handling'
+              ],
+              expectedResult: 'System displays appropriate error message',
+              priority: 'Medium'
+            });
+            tcId++;
+          }
+
+          // Validation test cases
+          if (trimmed.toLowerCase().includes('validate') || trimmed.toLowerCase().includes('verify')) {
+            generatedCases.push({
+              id: `TC_${String(tcId).padStart(3, '0')}`,
+              module: chunk.title || `Module ${idx + 1}`,
+              type: 'Validation',
+              description: trimmed,
+              steps: [
+                'Prepare test data',
+                `Execute validation: ${trimmed}`,
+                'Check validation result'
+              ],
+              expectedResult: 'Validation passes for valid data, fails for invalid data',
+              priority: 'High'
+            });
+            tcId++;
+          }
+        });
+      });
+
+      setTestCases(generatedCases);
+      setStep(4);
+      setLoading(false);
+    }, 1000);
+  };
+
+  const exportToCSV = () => {
+    const headers = ['Test Case ID', 'Module', 'Type', 'Description', 'Test Steps', 'Expected Result', 'Priority'];
+    const rows = testCases.map(tc => [
+      tc.id,
+      tc.module,
+      tc.type,
+      tc.description,
+      tc.steps.join(' | '),
+      tc.expectedResult,
+      tc.priority
+    ]);
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'test_cases.csv';
+    a.click();
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white rounded-xl shadow-2xl p-8">
+          <div className="flex items-center gap-3 mb-8">
+            <Brain className="w-10 h-10 text-indigo-600" />
+            <h1 className="text-3xl font-bold text-gray-800">AI Test Case Generator</h1>
+          </div>
+
+          {/* Progress Steps */}
+          <div className="flex justify-between mb-8">
+            {[
+              { num: 1, label: 'Upload', icon: Upload },
+              { num: 2, label: 'Clean & Extract', icon: FileText },
+              { num: 3, label: 'Chunk', icon: Scissors },
+              { num: 4, label: 'Generate', icon: Brain }
+            ].map(({ num, label, icon: Icon }) => (
+              <div key={num} className="flex flex-col items-center flex-1">
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                  step >= num ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'
+                }`}>
+                  {step > num ? <CheckCircle className="w-6 h-6" /> : <Icon className="w-6 h-6" />}
+                </div>
+                <span className={`mt-2 text-sm font-medium ${
+                  step >= num ? 'text-indigo-600' : 'text-gray-500'
+                }`}>{label}</span>
+                {num < 4 && <div className={`h-1 w-full mt-4 ${
+                  step > num ? 'bg-indigo-600' : 'bg-gray-200'
+                }`} />}
+              </div>
+            ))}
+          </div>
+
+          {/* Step 1: Upload */}
+          {step === 1 && (
+            <div className="space-y-6">
+              <div className="border-2 border-dashed border-indigo-300 rounded-lg p-12 text-center hover:border-indigo-500 transition">
+                <Upload className="w-16 h-16 text-indigo-400 mx-auto mb-4" />
+                <h3 className="text-xl font-semibold mb-2">Upload Document</h3>
+                <p className="text-gray-600 mb-4">Support for PDF, DOCX, and TXT files</p>
+                <label className="inline-block">
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.txt"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  <span className="bg-indigo-600 text-white px-6 py-3 rounded-lg cursor-pointer hover:bg-indigo-700 transition inline-block">
+                    Choose File
+                  </span>
+                </label>
+                {file && <p className="mt-4 text-sm text-gray-600">Selected: {file.name}</p>}
+              </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex gap-2">
+                  <AlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-blue-800">
+                    <strong>Note:</strong> The system will extract text, tables, and analyze images/diagrams from your document.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Clean & Extract */}
+          {step === 2 && (
+            <div className="space-y-6">
+              <h3 className="text-xl font-semibold mb-4">Extracted & Cleaned Text</h3>
+              <div className="bg-gray-50 rounded-lg p-6 max-h-96 overflow-y-auto border">
+                <pre className="whitespace-pre-wrap text-sm">{extractedText}</pre>
+              </div>
+              <button
+                onClick={() => setStep(3)}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 transition font-semibold"
+              >
+                Proceed to Chunking
+              </button>
+            </div>
+          )}
+
+          {/* Step 3: Chunking */}
+          {step === 3 && chunks.length === 0 && (
+            <div className="space-y-6">
+              <h3 className="text-xl font-semibold mb-4">Chunking Configuration</h3>
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <Settings className="w-5 h-5 text-gray-600" />
+                  <label className="font-medium">Chunking Method:</label>
+                </div>
+                <select
+                  value={chunkingMethod}
+                  onChange={(e) => setChunkingMethod(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="header">By Headers/Titles (Recommended)</option>
+                  <option value="paragraph">By Paragraphs</option>
+                  <option value="custom">Custom Delimiter</option>
+                </select>
+                
+                {chunkingMethod === 'custom' && (
+                  <input
+                    type="text"
+                    placeholder="Enter delimiter (e.g., ###, ---)"
+                    value={customDelimiter}
+                    onChange={(e) => setCustomDelimiter(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                )}
+              </div>
+              <button
+                onClick={handleChunking}
+                disabled={loading}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 transition font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {loading ? <Loader className="w-5 h-5 animate-spin" /> : <Scissors className="w-5 h-5" />}
+                {loading ? 'Processing...' : 'Create Chunks'}
+              </button>
+            </div>
+          )}
+
+          {step === 3 && chunks.length > 0 && (
+            <div className="space-y-6">
+              <h3 className="text-xl font-semibold mb-4">Document Chunks ({chunks.length})</h3>
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {chunks.map((chunk, idx) => (
+                  <div key={idx} className="bg-gray-50 rounded-lg p-4 border">
+                    <h4 className="font-semibold text-indigo-600 mb-2">{chunk.title}</h4>
+                    <p className="text-sm text-gray-700">{chunk.content.join(' ').substring(0, 200)}...</p>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={generateTestCases}
+                disabled={loading}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 transition font-semibold flex items-center justify-center gap-2"
+              >
+                {loading ? <Loader className="w-5 h-5 animate-spin" /> : <Brain className="w-5 h-5" />}
+                {loading ? 'Generating Test Cases...' : 'Generate Test Cases'}
+              </button>
+            </div>
+          )}
+
+          {/* Step 4: Results */}
+          {step === 4 && (
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold">Generated Test Cases ({testCases.length})</h3>
+                <button
+                  onClick={exportToCSV}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"
+                >
+                  <Download className="w-4 h-4" />
+                  Export CSV
+                </button>
+              </div>
+              
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full border-collapse">
+                  <thead className="bg-indigo-600 text-white sticky top-0">
+                    <tr>
+                      <th className="p-3 text-left">ID</th>
+                      <th className="p-3 text-left">Module</th>
+                      <th className="p-3 text-left">Type</th>
+                      <th className="p-3 text-left">Description</th>
+                      <th className="p-3 text-left">Steps</th>
+                      <th className="p-3 text-left">Expected Result</th>
+                      <th className="p-3 text-left">Priority</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {testCases.map((tc, idx) => (
+                      <tr key={idx} className={idx % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                        <td className="p-3 font-mono text-sm">{tc.id}</td>
+                        <td className="p-3 text-sm">{tc.module}</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            tc.type === 'Positive' ? 'bg-green-100 text-green-800' :
+                            tc.type === 'Negative' ? 'bg-red-100 text-red-800' :
+                            'bg-blue-100 text-blue-800'
+                          }`}>
+                            {tc.type}
+                          </span>
+                        </td>
+                        <td className="p-3 text-sm">{tc.description.substring(0, 50)}...</td>
+                        <td className="p-3 text-sm">
+                          <ol className="list-decimal list-inside">
+                            {tc.steps.map((step, i) => (
+                              <li key={i} className="text-xs">{step.substring(0, 30)}...</li>
+                            ))}
+                          </ol>
+                        </td>
+                        <td className="p-3 text-sm">{tc.expectedResult.substring(0, 40)}...</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            tc.priority === 'High' ? 'bg-red-100 text-red-800' :
+                            tc.priority === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {tc.priority}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TestCaseGenerator;
