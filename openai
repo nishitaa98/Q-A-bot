@@ -1,0 +1,163 @@
+"""
+READY-TO-RUN PDF Q&A SYSTEM
+Just add your API key and PDF path, then run!
+
+Installation:
+pip install openai langchain langchain-openai pypdf faiss-cpu
+"""
+
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.document_loaders import PyPDFLoader
+from langchain.prompts import PromptTemplate
+
+# ========================================
+# CONFIGURATION - CHANGE THESE VALUES
+# ========================================
+
+# 1. Put your OpenAI API key here
+OPENAI_API_KEY = "sk-proj-xxxxxxxxxxxxxxxxxxxxx"  # ← REPLACE THIS
+
+# 2. Put your PDF file path here
+PDF_PATH = "your_document.pdf"  # ← REPLACE THIS
+
+# 3. Your questions (add more if you want)
+QUESTIONS = [
+    "What is the main topic of this document?",
+    "Can you provide a summary?",
+    "What are the key findings or conclusions?"
+]
+
+# ========================================
+# NO NEED TO CHANGE ANYTHING BELOW
+# ========================================
+
+def main():
+    print("=" * 70)
+    print("📄 PDF QUESTION & ANSWER SYSTEM")
+    print("=" * 70)
+    
+    # Validate inputs
+    if "xxxxx" in OPENAI_API_KEY:
+        print("\n❌ ERROR: Please add your OpenAI API key in the code!")
+        print("Look for: OPENAI_API_KEY = \"sk-proj-xxxxx...\"")
+        return
+    
+    if PDF_PATH == "your_document.pdf":
+        print("\n❌ ERROR: Please add your PDF file path in the code!")
+        print("Look for: PDF_PATH = \"your_document.pdf\"")
+        return
+    
+    try:
+        # Step 1: Load PDF
+        print(f"\n📂 Loading PDF: {PDF_PATH}")
+        loader = PyPDFLoader(PDF_PATH)
+        documents = loader.load()
+        print(f"   ✅ Loaded {len(documents)} pages")
+        
+        # Step 2: Split into chunks
+        print("\n✂️  Splitting document into chunks...")
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+        )
+        texts = text_splitter.split_documents(documents)
+        print(f"   ✅ Created {len(texts)} chunks")
+        
+        # Step 3: Create embeddings
+        print("\n🔄 Creating embeddings (this may take a moment)...")
+        embeddings = OpenAIEmbeddings(
+            openai_api_key=OPENAI_API_KEY,
+            model="text-embedding-3-small"
+        )
+        
+        # Step 4: Create vector store
+        print("   Creating vector database...")
+        vector_store = FAISS.from_documents(texts, embeddings)
+        print("   ✅ Vector database created")
+        
+        # Step 5: Create LLM
+        print("\n🤖 Initializing GPT-4...")
+        llm = ChatOpenAI(
+            openai_api_key=OPENAI_API_KEY,
+            model="gpt-4",
+            temperature=0
+        )
+        print("   ✅ LLM ready")
+        
+        # Step 6: Create QA chain
+        prompt_template = """Use the following context to answer the question. 
+        If you don't know the answer, say so clearly.
+
+        Context: {context}
+
+        Question: {question}
+
+        Answer:"""
+        
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
+        )
+        
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vector_store.as_retriever(search_kwargs={"k": 4}),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": PROMPT}
+        )
+        
+        print("\n" + "=" * 70)
+        print("🎉 SYSTEM READY! Answering your questions...")
+        print("=" * 70)
+        
+        # Step 7: Answer questions
+        for i, question in enumerate(QUESTIONS, 1):
+            print(f"\n\n{'─' * 70}")
+            print(f"❓ QUESTION {i}: {question}")
+            print('─' * 70)
+            
+            result = qa_chain({"query": question})
+            answer = result["result"]
+            
+            print(f"\n💡 ANSWER:\n{answer}")
+            
+            # Show sources
+            sources = result["source_documents"]
+            print(f"\n📚 Based on {len(sources)} source chunks from the document")
+        
+        print("\n\n" + "=" * 70)
+        print("✅ ALL DONE!")
+        print("=" * 70)
+        
+        # Interactive mode
+        print("\n💬 Want to ask more questions? (Enter 'quit' to exit)")
+        while True:
+            user_question = input("\nYour question: ").strip()
+            if user_question.lower() in ['quit', 'exit', 'q']:
+                print("\n👋 Goodbye!")
+                break
+            
+            if user_question:
+                print("\n🤔 Thinking...")
+                result = qa_chain({"query": user_question})
+                print(f"\n💡 Answer:\n{result['result']}")
+        
+    except FileNotFoundError:
+        print(f"\n❌ ERROR: PDF file not found at: {PDF_PATH}")
+        print("Please check the file path and try again.")
+    
+    except Exception as e:
+        print(f"\n❌ ERROR: {str(e)}")
+        print("\n🔍 Possible issues:")
+        print("1. Check your API key is correct")
+        print("2. Make sure you have credits in OpenAI account")
+        print("3. Verify PDF file exists at the specified path")
+        print("4. Check your internet connection")
+
+if __name__ == "__main__":
+    main()
