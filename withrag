@@ -1,0 +1,411 @@
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List
+import os
+from datetime import datetime, timedelta
+import jwt
+from passlib.context import CryptContext
+import PyPDF2
+from docx import Document as DocxDocument
+from openai import AzureOpenAI
+import io
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+import chromadb
+from chromadb.config import Settings
+import uuid
+
+# Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
+
+# Database setup (SQLite for simplicity)
+SQLALCHEMY_DATABASE_URL = "sqlite:///./testcase_generator_rag.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# ChromaDB setup
+chroma_client = chromadb.Client(Settings(
+    chroma_db_impl="duckdb+parquet",
+    persist_directory="./chroma_db"
+))
+
+# Database Models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class TestCase(Base):
+    __tablename__ = "testcases"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer)
+    filename = Column(String)
+    collection_id = Column(String)  # ChromaDB collection ID
+    testcases = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
+
+# Initialize FastAPI
+app = FastAPI(title="TestCase Generator API with RAG")
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Security
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+# Azure OpenAI Client
+azure_client = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    api_version="2024-02-15-preview",
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
+)
+
+# Pydantic Models
+class UserCreate(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    username: str
+    created_at: datetime
+
+class TestCaseResponse(BaseModel):
+    id: int
+    filename: str
+    testcases: str
+    created_at: datetime
+
+# Helper Functions
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def decode_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    token = credentials.credentials
+    payload = decode_token(token)
+    username = payload.get("sub")
+    if username is None:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+def extract_text_from_pdf(file_content: bytes) -> str:
+    pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+    text = ""
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
+
+def extract_text_from_docx(file_content: bytes) -> str:
+    doc = DocxDocument(io.BytesIO(file_content))
+    text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    return text
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """Split text into overlapping chunks for better context retrieval"""
+    chunks = []
+    start = 0
+    text_length = len(text)
+    
+    while start < text_length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    
+    return chunks
+
+def get_embeddings(text: str) -> List[float]:
+    """Get embeddings from Azure OpenAI"""
+    response = azure_client.embeddings.create(
+        input=text,
+        model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    )
+    return response.data[0].embedding
+
+def store_document_in_vectordb(document_text: str, collection_id: str, filename: str):
+    """Store document chunks in ChromaDB with embeddings"""
+    # Create or get collection
+    try:
+        collection = chroma_client.get_collection(name=collection_id)
+    except:
+        collection = chroma_client.create_collection(name=collection_id)
+    
+    # Chunk the document
+    chunks = chunk_text(document_text)
+    
+    # Generate embeddings and store
+    for idx, chunk in enumerate(chunks):
+        embedding = get_embeddings(chunk)
+        collection.add(
+            embeddings=[embedding],
+            documents=[chunk],
+            metadatas=[{"filename": filename, "chunk_id": idx}],
+            ids=[f"{collection_id}_{idx}"]
+        )
+    
+    return len(chunks)
+
+def retrieve_relevant_context(query: str, collection_id: str, top_k: int = 5) -> str:
+    """Retrieve relevant document chunks based on query"""
+    try:
+        collection = chroma_client.get_collection(name=collection_id)
+        query_embedding = get_embeddings(query)
+        
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k
+        )
+        
+        # Combine retrieved chunks
+        context = "\n\n".join(results['documents'][0])
+        return context
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving context: {str(e)}")
+
+def generate_testcases_with_rag(collection_id: str, filename: str) -> str:
+    """Generate test cases using RAG approach"""
+    
+    # Initial query to understand document structure
+    initial_query = "What are the main features, functionalities, and requirements described in this document?"
+    context = retrieve_relevant_context(initial_query, collection_id, top_k=5)
+    
+    # Generate comprehensive test cases
+    prompt = f"""You are an expert software testing professional. Based on the following document context retrieved from {filename}, generate comprehensive test cases.
+
+Retrieved Context:
+{context}
+
+Please generate:
+1. Functional Test Cases (based on requirements and features)
+2. Edge Cases (boundary conditions and unusual inputs)
+3. Negative Test Cases (error handling and invalid inputs)
+4. Integration Test Cases (if multiple components are mentioned)
+5. Performance Test Cases (if applicable)
+6. Security Test Cases (if authentication/authorization is mentioned)
+
+Format each test case with:
+- Test Case ID (TC-XXX)
+- Test Case Name
+- Preconditions
+- Test Steps (numbered)
+- Expected Result
+- Priority (High/Medium/Low)
+- Test Data (if needed)
+
+Generate at least 15 comprehensive test cases covering all aspects of the document."""
+
+    response = azure_client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": "You are an expert QA engineer specializing in comprehensive test case generation using RAG techniques."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7,
+        max_tokens=3000
+    )
+    
+    return response.choices[0].message.content
+
+# API Endpoints
+@app.post("/api/auth/register", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    # Check if user exists
+    existing_user = db.query(User).filter(
+        (User.email == user.email) | (User.username == user.username)
+    ).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User already exists")
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        username=user.username,
+        hashed_password=hashed_password
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/api/auth/login", response_model=Token)
+def login(user_login: UserLogin, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == user_login.username).first()
+    if not user or not verify_password(user_login.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/auth/me", response_model=UserResponse)
+def get_user_details(current_user: User = Depends(get_current_user)):
+    return current_user
+
+@app.post("/api/testcases/generate")
+async def generate_testcases(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Validate file type
+    if not file.filename.endswith(('.pdf', '.docx', '.doc')):
+        raise HTTPException(status_code=400, detail="Only PDF and Word files are supported")
+    
+    # Read file content
+    file_content = await file.read()
+    
+    # Extract text based on file type
+    try:
+        if file.filename.endswith('.pdf'):
+            document_text = extract_text_from_pdf(file_content)
+        else:
+            document_text = extract_text_from_docx(file_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
+    
+    if not document_text.strip():
+        raise HTTPException(status_code=400, detail="No text could be extracted from the document")
+    
+    # Generate unique collection ID
+    collection_id = f"user_{current_user.id}_{uuid.uuid4().hex[:8]}"
+    
+    # Store document in vector database
+    try:
+        num_chunks = store_document_in_vectordb(document_text, collection_id, file.filename)
+        print(f"Stored {num_chunks} chunks in vector database")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error storing document: {str(e)}")
+    
+    # Generate test cases using RAG
+    try:
+        testcases = generate_testcases_with_rag(collection_id, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating test cases: {str(e)}")
+    
+    # Save to database
+    db_testcase = TestCase(
+        user_id=current_user.id,
+        filename=file.filename,
+        collection_id=collection_id,
+        testcases=testcases
+    )
+    db.add(db_testcase)
+    db.commit()
+    db.refresh(db_testcase)
+    
+    return {
+        "id": db_testcase.id,
+        "filename": file.filename,
+        "testcases": testcases,
+        "created_at": db_testcase.created_at,
+        "chunks_processed": num_chunks
+    }
+
+@app.get("/api/testcases/history", response_model=List[TestCaseResponse])
+def get_testcase_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    testcases = db.query(TestCase).filter(TestCase.user_id == current_user.id).order_by(TestCase.created_at.desc()).all()
+    return testcases
+
+@app.post("/api/testcases/regenerate/{testcase_id}")
+def regenerate_testcases(
+    testcase_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Regenerate test cases for an existing document using different retrieval strategy"""
+    testcase = db.query(TestCase).filter(
+        TestCase.id == testcase_id,
+        TestCase.user_id == current_user.id
+    ).first()
+    
+    if not testcase:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    
+    try:
+        # Regenerate with different context
+        new_testcases = generate_testcases_with_rag(testcase.collection_id, testcase.filename)
+        testcase.testcases = new_testcases
+        db.commit()
+        
+        return {
+            "id": testcase.id,
+            "filename": testcase.filename,
+            "testcases": new_testcases,
+            "created_at": testcase.created_at
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error regenerating test cases: {str(e)}")
+
+@app.get("/")
+def root():
+    return {"message": "TestCase Generator API - With RAG (Retrieval Augmented Generation)"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
