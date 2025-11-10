@@ -1,0 +1,454 @@
+testcase-generator-frontend/
+├── src/
+│   ├── app/
+│   │   ├── layout.js
+│   │   ├── page.js
+│   │   ├── register/
+│   │   │   └── page.js
+│   │   ├── login/
+│   │   │   └── page.js
+│   │   └── dashboard/
+│   │       └── page.js
+│   ├── components/
+│   │   ├── Navbar.js
+│   │   └── TestCaseDisplay.js
+│   ├── context/
+│   │   └── AuthContext.js
+│   └── utils/
+│       └── api.js
+
+
+3. Environment Variables
+Create .env.local:
+envNEXT_PUBLIC_API_URL=http://localhost:8000
+4. Key Files to Create
+src/utils/api.js
+javascriptimport axios from 'axios';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+const api = axios.create({
+  baseURL: API_URL,
+});
+
+// Add auth token to requests
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export const authAPI = {
+  register: (data) => api.post('/api/auth/register', data),
+  login: (data) => api.post('/api/auth/login', data),
+  getMe: () => api.get('/api/auth/me'),
+};
+
+export const testCaseAPI = {
+  generate: (formData) => api.post('/api/testcases/generate', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
+  getHistory: () => api.get('/api/testcases/history'),
+  regenerate: (id) => api.post(`/api/testcases/regenerate/${id}`), // Only for RAG version
+};
+
+export default api;
+src/context/AuthContext.js
+
+javascript'use client';
+import { createContext, useContext, useState, useEffect } from 'react';
+import { authAPI } from '@/utils/api';
+import { useRouter } from 'next/navigation';
+
+const AuthContext = createContext();
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const checkAuth = async () => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const response = await authAPI.getMe();
+        setUser(response.data);
+      } catch (error) {
+        localStorage.removeItem('token');
+      }
+    }
+    setLoading(false);
+  };
+
+  const login = async (credentials) => {
+    const response = await authAPI.login(credentials);
+    localStorage.setItem('token', response.data.access_token);
+    await checkAuth();
+    router.push('/dashboard');
+  };
+
+  const register = async (data) => {
+    await authAPI.register(data);
+    await login({ username: data.username, password: data.password });
+  };
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    setUser(null);
+    router.push('/login');
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export const useAuth = () => useContext(AuthContext);
+
+
+
+
+src/components/Navbar.js
+javascript'use client';
+import Link from 'next/link';
+import { useAuth } from '@/context/AuthContext';
+
+export default function Navbar() {
+  const { user, logout } = useAuth();
+
+  return (
+    <nav className="bg-blue-600 text-white p-4">
+      <div className="container mx-auto flex justify-between items-center">
+        <Link href="/" className="text-2xl font-bold">
+          TestCase Generator
+        </Link>
+        <div className="space-x-4">
+          {user ? (
+            <>
+              <span>Welcome, {user.username}</span>
+              <Link href="/dashboard" className="hover:underline">
+                Dashboard
+              </Link>
+              <button onClick={logout} className="hover:underline">
+                Logout
+              </button>
+            </>
+          ) : (
+            <>
+              <Link href="/login" className="hover:underline">
+                Login
+              </Link>
+              <Link href="/register" className="hover:underline">
+                Register
+              </Link>
+            </>
+          )}
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+
+src/app/layout.js
+javascriptimport './globals.css';
+import { AuthProvider } from '@/context/AuthContext';
+import Navbar from '@/components/Navbar';
+
+export const metadata = {
+  title: 'TestCase Generator',
+  description: 'Generate test cases from documents',
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body>
+        <AuthProvider>
+          <Navbar />
+          {children}
+        </AuthProvider>
+      </body>
+    </html>
+  );
+}
+
+
+src/app/page.js
+javascriptexport default function Home() {
+  return (
+    <main className="container mx-auto p-8">
+      <h1 className="text-4xl font-bold mb-4">Welcome to TestCase Generator</h1>
+      <p className="text-xl">
+        Upload your PDF or Word documents and get comprehensive test cases
+        automatically generated using AI.
+      </p>
+    </main>
+  );
+}
+
+
+src/app/register/page.js
+javascript'use client';
+import { useState } from 'react';
+import { useAuth } from '@/context/AuthContext';
+
+export default function Register() {
+  const { register } = useAuth();
+  const [formData, setFormData] = useState({
+    email: '',
+    username: '',
+    password: '',
+  });
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await register(formData);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Registration failed');
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-8 max-w-md">
+      <h1 className="text-3xl font-bold mb-6">Register</h1>
+      {error && <div className="bg-red-100 p-3 rounded mb-4">{error}</div>}
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block mb-2">Email</label>
+          <input
+            type="email"
+            className="w-full border p-2 rounded"
+            value={formData.email}
+            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+            required
+          />
+        </div>
+        <div>
+          <label className="block mb-2">Username</label>
+          <input
+            type="text"
+            className="w-full border p-2 rounded"
+            value={formData.username}
+            onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+            required
+          />
+        </div>
+        <div>
+          <label className="block mb-2">Password</label>
+          <input
+            type="password"
+            className="w-full border p-2 rounded"
+            value={formData.password}
+            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+            required
+          />
+        </div>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700"
+        >
+          Register
+        </button>
+      </form>
+    </div>
+  );
+}
+src/app/login/page.js
+javascript'use client';
+import { useState } from 'react';
+import { useAuth } from '@/context/AuthContext';
+
+export default function Login() {
+  const { login } = useAuth();
+  const [formData, setFormData] = useState({
+    username: '',
+    password: '',
+  });
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await login(formData);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Login failed');
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-8 max-w-md">
+      <h1 className="text-3xl font-bold mb-6">Login</h1>
+      {error && <div className="bg-red-100 p-3 rounded mb-4">{error}</div>}
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block mb-2">Username</label>
+          <input
+            type="text"
+            className="w-full border p-2 rounded"
+            value={formData.username}
+            onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+            required
+          />
+        </div>
+        <div>
+          <label className="block mb-2">Password</label>
+          <input
+            type="password"
+            className="w-full border p-2 rounded"
+            value={formData.password}
+            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+            required
+          />
+        </div>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700"
+        >
+          Login
+        </button>
+      </form>
+    </div>
+  );
+}
+src/app/dashboard/page.js
+javascript'use client';
+import { useState, useEffect } from 'react';
+import { useAuth } from '@/context/AuthContext';
+import { testCaseAPI } from '@/utils/api';
+import ReactMarkdown from 'react-markdown';
+
+export default function Dashboard() {
+  const { user } = useAuth();
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [testCases, setTestCases] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    try {
+      const response = await testCaseAPI.getHistory();
+      setHistory(response.data);
+    } catch (err) {
+      console.error('Error loading history:', err);
+    }
+  };
+
+  const handleFileChange = (e) => {
+    setFile(e.target.files[0]);
+    setError('');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!file) return;
+
+    setLoading(true);
+    setError('');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await testCaseAPI.generate(formData);
+      setTestCases(response.data);
+      loadHistory();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Error generating test cases');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-8">
+      <h1 className="text-3xl font-bold mb-6">Test Case Generator Dashboard</h1>
+      
+      {/* Upload Section */}
+      <div className="bg-white p-6 rounded shadow mb-8">
+        <h2 className="text-2xl font-bold mb-4">Upload Document</h2>
+        {error && <div className="bg-red-100 p-3 rounded mb-4">{error}</div>}
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block mb-2">Select PDF or Word Document</label>
+            <input
+              type="file"
+              accept=".pdf,.doc,.docx"
+              onChange={handleFileChange}
+              className="w-full border p-2 rounded"
+              required
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading || !file}
+            className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:bg-gray-400"
+          >
+            {loading ? 'Generating...' : 'Generate Test Cases'}
+          </button>
+        </form>
+      </div>
+
+      {/* Test Cases Display */}
+      {testCases && (
+        <div className="bg-white p-6 rounded shadow mb-8">
+          <h2 className="text-2xl font-bold mb-4">Generated Test Cases</h2>
+          <div className="prose max-w-none">
+            <ReactMarkdown>{testCases.testcases}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+
+      {/* History Section */}
+      <div className="bg-white p-6 rounded shadow">
+        <h2 className="text-2xl font-bold mb-4">Previous Generations</h2>
+        {history.length === 0 ? (
+          <p>No test cases generated yet.</p>
+        ) : (
+          <div className="space-y-4">
+            {history.map((item) => (
+              <div key={item.id} className="border p-4 rounded">
+                <h3 className="font-bold">{item.filename}</h3>
+                <p className="text-sm text-gray-600">
+                  {new Date(item.created_at).toLocaleString()}
+                </p>
+                <button
+                  onClick={() => setTestCases(item)}
+                  className="mt-2 text-blue-600 hover:underline"
+                >
+                  View Test Cases
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+5. Installation and Running
+bash# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+Visit http://localhost:3000
+6. For Production Build
+bashnpm run build
+npm start
