@@ -1,0 +1,316 @@
+"""
+Test Case Generator with RAG and Reranking using FastAPI
+Supports: PDF, DOCX, PPT, Excel documents
+Uses Azure OpenAI and LangChain with reranking
+"""
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import os
+import json
+from typing import List
+from datetime import datetime
+import io
+
+# Document processing
+from PyPDF2 import PdfReader
+from docx import Document
+from pptx import Presentation
+import openpyxl
+
+# LangChain and embeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_openai import AzureOpenAIEmbeddings
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import LLMListwiseReranker
+from langchain_openai import AzureChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+
+# Initialize FastAPI
+app = FastAPI(title="Test Case Generator API", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "your-key-here")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "your-endpoint-here")
+AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4")
+AZURE_EMBEDDINGS_DEPLOYMENT = os.getenv("AZURE_EMBEDDINGS_DEPLOYMENT", "text-embedding-3-small")
+API_VERSION = "2024-02-15-preview"
+
+# Initialize Azure OpenAI
+embeddings = AzureOpenAIEmbeddings(
+    azure_deployment=AZURE_EMBEDDINGS_DEPLOYMENT,
+    openai_api_version=API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_KEY,
+)
+
+llm = AzureChatOpenAI(
+    azure_deployment=AZURE_DEPLOYMENT_NAME,
+    openai_api_version=API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_KEY,
+    temperature=0.7,
+)
+
+# Document extraction functions
+def extract_pdf_text(file_content: bytes) -> str:
+    """Extract text from PDF"""
+    pdf_file = io.BytesIO(file_content)
+    pdf_reader = PdfReader(pdf_file)
+    text = ""
+    for page_num, page in enumerate(pdf_reader.pages):
+        text += f"\n--- Page {page_num + 1} ---\n"
+        text += page.extract_text()
+    return text
+
+def extract_docx_text(file_content: bytes) -> str:
+    """Extract text from Word document"""
+    doc_file = io.BytesIO(file_content)
+    doc = Document(doc_file)
+    text = ""
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text += cell.text + " | "
+            text += "\n"
+    return text
+
+def extract_ppt_text(file_content: bytes) -> str:
+    """Extract text from PowerPoint"""
+    ppt_file = io.BytesIO(file_content)
+    prs = Presentation(ppt_file)
+    text = ""
+    for slide_num, slide in enumerate(prs.slides):
+        text += f"\n--- Slide {slide_num + 1} ---\n"
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                text += shape.text + "\n"
+    return text
+
+def extract_excel_text(file_content: bytes) -> str:
+    """Extract text from Excel"""
+    excel_file = io.BytesIO(file_content)
+    wb = openpyxl.load_workbook(excel_file)
+    text = ""
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        text += f"\n--- Sheet: {sheet_name} ---\n"
+        for row in ws.iter_rows(values_only=True):
+            text += " | ".join([str(cell) if cell else "" for cell in row]) + "\n"
+    return text
+
+def extract_document_text(file: UploadFile, file_content: bytes) -> tuple[str, str]:
+    """Extract text based on file type"""
+    filename = file.filename.lower()
+    
+    if filename.endswith('.pdf'):
+        text = extract_pdf_text(file_content)
+        page_info = "PDF"
+    elif filename.endswith('.docx'):
+        text = extract_docx_text(file_content)
+        page_info = "DOCX"
+    elif filename.endswith(('.ppt', '.pptx')):
+        text = extract_ppt_text(file_content)
+        page_info = "PPT"
+    elif filename.endswith(('.xlsx', '.xls')):
+        text = extract_excel_text(file_content)
+        page_info = "Excel"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+    
+    return text, page_info
+
+def create_rag_retriever(documents_text: str, chunk_size: int = 500, chunk_overlap: int = 100):
+    """Create RAG retriever with reranking"""
+    # Split documents into chunks
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = splitter.split_text(documents_text)
+    
+    # Create vector store
+    vectorstore = FAISS.from_texts(chunks, embeddings)
+    base_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    
+    # Add reranking
+    compressor = LLMListwiseReranker(
+        llm=llm,
+        top_n=5
+    )
+    retriever = ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=base_retriever
+    )
+    
+    return retriever, chunks
+
+def generate_test_cases(retriever, query: str, num_cases: int = 5) -> List[dict]:
+    """Generate test cases from retrieved documents"""
+    
+    # Retrieve relevant context
+    relevant_docs = retriever.invoke(query)
+    context = "\n".join([doc.page_content for doc in relevant_docs])
+    
+    # Prompt for test case generation
+    prompt_template = PromptTemplate(
+        input_variables=["context", "num_cases"],
+        template="""Based on the following document context, generate {num_cases} comprehensive test cases.
+        
+Document Context:
+{context}
+
+Generate test cases with the following structure for each one. Return as JSON array:
+[
+  {{
+    "test_case_id": "TC_001",
+    "test_case_description": "Brief description",
+    "prerequisites": ["prerequisite 1", "prerequisite 2"],
+    "test_steps": ["step 1", "step 2", "step 3"],
+    "test_data": {{"key": "value"}},
+    "expected_result": "Description of expected result",
+    "actual_result": "",
+    "status": "Not Executed",
+    "created_by": "QA Team",
+    "date_of_creation": "{date}",
+    "executed_by": "",
+    "date_of_execution": "",
+    "page_number": "1"
+  }}
+]
+
+Ensure test cases cover:
+1. Normal/Happy path scenarios
+2. Edge cases
+3. Error handling
+4. Business logic validation
+5. Data validation
+
+Return ONLY valid JSON array, no additional text.""".format(date=datetime.now().strftime("%Y-%m-%d"), num_cases=num_cases)
+    )
+    
+    chain = LLMChain(llm=llm, prompt=prompt_template)
+    response = chain.invoke({"context": context, "num_cases": num_cases})
+    
+    # Parse response
+    try:
+        # Extract JSON from response
+        response_text = response.get("text", "")
+        json_start = response_text.find("[")
+        json_end = response_text.rfind("]") + 1
+        if json_start != -1 and json_end > json_start:
+            json_str = response_text[json_start:json_end]
+            test_cases = json.loads(json_str)
+        else:
+            test_cases = []
+    except json.JSONDecodeError:
+        test_cases = []
+    
+    return test_cases
+
+@app.post("/upload-and-generate")
+async def upload_and_generate(
+    file: UploadFile = File(...),
+    num_test_cases: int = 5,
+    query: str = "Generate test cases for the functionality described"
+):
+    """
+    Upload a document and generate test cases
+    
+    Args:
+        file: Document file (PDF, DOCX, PPT, XLSX)
+        num_test_cases: Number of test cases to generate
+        query: Custom query for test case generation
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Extract text
+        document_text, doc_type = extract_document_text(file, file_content)
+        
+        if not document_text.strip():
+            raise HTTPException(status_code=400, detail="No text could be extracted from document")
+        
+        # Create RAG retriever with reranking
+        retriever, chunks = create_rag_retriever(document_text)
+        
+        # Generate test cases
+        test_cases = generate_test_cases(retriever, query, num_test_cases)
+        
+        return JSONResponse({
+            "status": "success",
+            "file_name": file.filename,
+            "document_type": doc_type,
+            "chunks_created": len(chunks),
+            "test_cases_generated": len(test_cases),
+            "test_cases": test_cases
+        })
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@app.post("/generate-from-text")
+async def generate_from_text(
+    text_content: str,
+    num_test_cases: int = 5,
+    query: str = "Generate comprehensive test cases"
+):
+    """Generate test cases from raw text input"""
+    try:
+        if not text_content.strip():
+            raise HTTPException(status_code=400, detail="Text content cannot be empty")
+        
+        # Create RAG retriever
+        retriever, chunks = create_rag_retriever(text_content)
+        
+        # Generate test cases
+        test_cases = generate_test_cases(retriever, query, num_test_cases)
+        
+        return JSONResponse({
+            "status": "success",
+            "chunks_created": len(chunks),
+            "test_cases_generated": len(test_cases),
+            "test_cases": test_cases
+        })
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return JSONResponse({"status": "healthy", "service": "Test Case Generator API"})
+
+@app.get("/")
+async def root():
+    """Root endpoint with API documentation"""
+    return JSONResponse({
+        "service": "Test Case Generator API",
+        "version": "1.0.0",
+        "endpoints": {
+            "POST /upload-and-generate": "Upload document and generate test cases",
+            "POST /generate-from-text": "Generate test cases from text",
+            "GET /health": "Health check"
+        },
+        "supported_formats": ["PDF", "DOCX", "PPT", "XLSX", "XLS"]
+    })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
