@@ -1,3 +1,195 @@
+
+# Test Case Generator - Setup Guide
+
+## Installation
+
+### 1. Install Dependencies
+
+```bash
+pip install fastapi uvicorn python-multipart
+pip install PyPDF2 python-docx python-pptx openpyxl
+pip install langchain langchain-community langchain-openai
+pip install faiss-cpu
+pip install pydantic
+```
+
+### 2. Environment Variables
+
+Create a `.env` file in your project root:
+
+```env
+AZURE_OPENAI_KEY=your_azure_openai_api_key
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_DEPLOYMENT_NAME=gpt-4
+AZURE_EMBEDDINGS_DEPLOYMENT=text-embedding-3-small
+```
+
+### 3. Azure OpenAI Setup
+
+1. Create an Azure OpenAI resource
+2. Deploy a GPT-4 model (or update `AZURE_DEPLOYMENT_NAME` to your model)
+3. Deploy a text-embedding model (e.g., text-embedding-3-small)
+4. Copy your API key and endpoint to `.env`
+
+## Running the Server
+
+```bash
+python main.py
+```
+
+Server runs on `http://localhost:8000`
+
+## API Endpoints
+
+### 1. Upload Document & Generate Test Cases
+
+**Endpoint:** `POST /upload-and-generate`
+
+**Parameters:**
+- `file` (multipart/form-data): Document file (PDF, DOCX, PPT, XLSX)
+- `num_test_cases` (optional, default=5): Number of test cases to generate
+- `query` (optional): Custom query for test case generation
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/upload-and-generate" \
+  -F "file=@document.pdf" \
+  -F "num_test_cases=5" \
+  -F "query=Generate test cases for login functionality"
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "file_name": "document.pdf",
+  "document_type": "PDF",
+  "chunks_created": 12,
+  "test_cases_generated": 5,
+  "test_cases": [
+    {
+      "test_case_id": "TC_001",
+      "test_case_description": "Verify valid user login",
+      "prerequisites": ["User account exists", "Application is accessible"],
+      "test_steps": ["Open login page", "Enter credentials", "Click login"],
+      "test_data": {"username": "test@example.com", "password": "password123"},
+      "expected_result": "User logged in successfully",
+      "actual_result": "",
+      "status": "Not Executed",
+      "created_by": "QA Team",
+      "date_of_creation": "2025-11-14",
+      "executed_by": "",
+      "date_of_execution": "",
+      "page_number": "1"
+    }
+  ]
+}
+```
+
+### 2. Generate from Text
+
+**Endpoint:** `POST /generate-from-text`
+
+**Parameters:**
+- `text_content`: Raw text content
+- `num_test_cases` (optional, default=5): Number of test cases
+- `query` (optional): Custom query
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/generate-from-text" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text_content": "The system should allow users to reset their password...",
+    "num_test_cases": 3
+  }'
+```
+
+### 3. Health Check
+
+**Endpoint:** `GET /health`
+
+```bash
+curl http://localhost:8000/health
+```
+
+## How It Works
+
+### Document Processing
+1. Uploads document (PDF, DOCX, PPT, XLSX)
+2. Extracts text content with page/slide references
+3. Splits text into chunks (500 characters, 100 overlap)
+
+### RAG with Reranking
+1. Creates vector embeddings using Azure OpenAI Embeddings
+2. Stores in FAISS vector database
+3. Retrieves 10 initial relevant chunks
+4. **Reranks top 5** using LLMListwiseReranker for better relevance
+
+### Test Case Generation
+1. Uses reranked context
+2. Calls Azure OpenAI GPT-4 to generate structured test cases
+3. Returns JSON with all required fields:
+   - Test Case ID
+   - Description
+   - Prerequisites
+   - Test Steps
+   - Test Data
+   - Expected Result
+   - Status tracking fields
+
+## Features
+
+✅ **Multi-format Support**: PDF, DOCX, PPT, XLSX  
+✅ **RAG with Reranking**: Better context retrieval quality  
+✅ **Azure OpenAI Integration**: Uses your Azure credentials  
+✅ **Structured Output**: JSON format for easy integration  
+✅ **Page Tracking**: References document source (page/slide numbers)  
+✅ **Comprehensive Test Cases**: Covers normal paths, edge cases, error handling  
+
+## Docker Deployment
+
+Create a `Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY main.py .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Build and run:
+```bash
+docker build -t testcase-generator .
+docker run -p 8000:8000 \
+  -e AZURE_OPENAI_KEY=your_key \
+  -e AZURE_OPENAI_ENDPOINT=your_endpoint \
+  -e AZURE_DEPLOYMENT_NAME=gpt-4 \
+  testcase-generator
+```
+
+## Troubleshooting
+
+**Issue:** "Invalid API key"
+- Verify Azure credentials in `.env`
+- Check deployment names match your Azure resources
+
+**Issue:** "No text extracted"
+- Ensure document has selectable text (not scanned image)
+- Try converting to compatible format
+
+**Issue:** Poor test case quality
+- Adjust chunk size in `create_rag_retriever()` function
+- Modify the prompt template for specific requirements
+- Increase `top_n` in reranker for more context
+
+
 """
 Test Case Generator with RAG and Reranking using FastAPI
 Supports: PDF, DOCX, PPT, Excel documents
