@@ -2,30 +2,30 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 
-# Load env vars
+# Load env variables
 load_dotenv()
 
 api_key = os.getenv("AZURE_OPENAI_KEY")
-azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
-print("Loaded API KEY:", "YES" if api_key else "NO")
-print("Loaded ENDPOINT:", azure_endpoint)
-print("Loaded DEPLOYMENT:", deployment_name)
+# Print to verify env values
+print("API Key loaded:", "YES" if api_key else "NO")
+print("Endpoint:", endpoint)
+print("Deployment:", deployment)
 
-# Initialize client
+# --- Correct Azure Client ---
 client = OpenAI(
     api_key=api_key,
-    api_version=api_version,
-    base_url=f"{azure_endpoint}/openai/deployments/{deployment_name}"
+    base_url=f"{endpoint}/openai/deployments/{deployment}",
 )
 
-# Small test request
+# --- Test Request ---
 response = client.responses.create(
-    model=deployment_name,
-    input="Hello! This is a test message. Are my Azure keys working?"
+    model=deployment,
+    api_version=api_version,
+    input="Hello Azure! Testing my keys."
 )
 
-print("\nAPI Response:\n")
-print(response.output_text)
+print("Response:\n", response.output_text)
