@@ -15,17 +15,16 @@ print("API Key loaded:", "YES" if api_key else "NO")
 print("Endpoint:", endpoint)
 print("Deployment:", deployment)
 
-# --- Correct Azure Client ---
+# -------- Correct Azure Client --------
 client = OpenAI(
     api_key=api_key,
-    base_url=f"{endpoint}/openai/deployments/{deployment}",
+    base_url=f"{endpoint}/openai/deployments/{deployment}/?api-version={api_version}"
 )
 
-# --- Test Request ---
+# -------- TEST REQUEST --------
 response = client.responses.create(
     model=deployment,
-    api_version=api_version,
     input="Hello Azure! Testing my keys."
 )
 
-print("Response:\n", response.output_text)
+print("\nResponse:\n", response.output_text)
