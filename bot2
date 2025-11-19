@@ -371,3 +371,133 @@ const styles = {
     cursor: 'not-allowed',
   },
 };
+
+
+
+
+
+with llm
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+import anthropic
+import json
+
+app = FastAPI()
+
+# Initialize Anthropic client
+client = anthropic.Anthropic()
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    message: str
+    link: Optional[str]
+    category: Optional[str]
+
+def detect_intent_with_llm(user_message: str) -> tuple[str, Optional[str], str]:
+    """
+    Use Claude LLM to detect user intent and generate response
+    Returns: (category, link, response_message)
+    """
+    
+    system_prompt = """You are a helpful assistant that routes users to the right service portal.
+
+Analyze the user's message and determine which category they belong to:
+
+1. "test_cases" - User wants to create or generate test cases
+   Link: https://abc.com
+   
+2. "banking_products" - User wants to work with CIF, Loan accounts, CCOD deposits, or other banking products
+   Link: https://bank-portal.com
+   
+3. "qna_application" - User wants to use the Q&A/FAQ application
+   Link: https://qna-app.com
+   
+4. "unknown" - User query doesn't match any category
+   Link: null
+
+Respond in JSON format ONLY with these exact fields:
+{
+  "category": "test_cases" | "banking_products" | "qna_application" | "unknown",
+  "link": "https://..." or null,
+  "response": "Your helpful response message here"
+}
+
+Important:
+- Be conversational and helpful
+- If the category is not unknown, include the portal link in your response
+- Keep responses concise (1-2 sentences)
+- Include encouragement and next steps
+"""
+    
+    try:
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ]
+        )
+        
+        response_text = message.content[0].text
+        
+        # Parse JSON response
+        result = json.loads(response_text)
+        
+        category = result.get("category", "unknown")
+        link = result.get("link")
+        response = result.get("response", "I'm here to help. What do you need?")
+        
+        return category, link, response
+        
+    except json.JSONDecodeError:
+        return "unknown", None, "I'm not sure how to help with that. Please ask about: test cases, banking products (CIF/Loan/CCOD/Deposits), or Q&A application."
+    except Exception as e:
+        print(f"Error with LLM: {e}")
+        return "unknown", None, "Sorry, there was an error processing your request. Please try again."
+
+@app.post("/chat")
+async def chat(request: ChatRequest):
+    """
+    Process user message with LLM and return response with link if applicable
+    """
+    user_message = request.message.strip()
+    
+    if not user_message:
+        return ChatResponse(
+            message="Please provide a message",
+            link=None,
+            category=None
+        )
+    
+    category, link, response_msg = detect_intent_with_llm(user_message)
+    
+    return ChatResponse(
+        message=response_msg,
+        link=link,
+        category=category
+    )
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
