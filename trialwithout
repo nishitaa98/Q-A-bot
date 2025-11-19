@@ -348,3 +348,165 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+
+
+
+
+import requests
+import json
+
+# Base URL for the API
+BASE_URL = "http://localhost:8000"
+
+def upload_pdf(file_path):
+    """Upload a PDF file"""
+    print(f"\n{'='*80}")
+    print("UPLOADING PDF")
+    print(f"{'='*80}\n")
+    
+    with open(file_path, 'rb') as f:
+        files = {'file': (file_path, f, 'application/pdf')}
+        response = requests.post(f"{BASE_URL}/upload-pdf/", files=files)
+    
+    if response.status_code == 200:
+        result = response.json()
+        print(f"✓ PDF uploaded successfully!")
+        print(f"Filename: {result['metadata']['filename']}")
+        print(f"Pages: {result['metadata']['pages']}")
+        print(f"Chunks created: {result['chunks_created']}\n")
+        
+        print("CHUNK PREVIEWS:")
+        for chunk in result['chunks']:
+            print(f"\nChunk {chunk['chunk_id'] + 1} (Length: {chunk['length']} chars)")
+            print(f"Preview: {chunk['preview']}...")
+            print("-" * 80)
+        
+        return result
+    else:
+        print(f"✗ Error: {response.json()}")
+        return None
+
+def ask_question(question, chunk_limit=None):
+    """Ask a question about the uploaded PDF"""
+    print(f"\n{'='*80}")
+    print("ASKING QUESTION")
+    print(f"{'='*80}\n")
+    print(f"Question: {question}\n")
+    
+    payload = {"question": question}
+    if chunk_limit:
+        payload["chunk_limit"] = chunk_limit
+    
+    response = requests.post(
+        f"{BASE_URL}/ask-question/",
+        json=payload
+    )
+    
+    if response.status_code == 200:
+        result = response.json()
+        print(f"Answer:\n{result['answer']}\n")
+        print(f"Chunks used: {result['chunks_used']}")
+        print(f"Source: {result['metadata']['filename']}")
+        return result
+    else:
+        print(f"✗ Error: {response.json()}")
+        return None
+
+def get_all_chunks():
+    """Get all chunks from the uploaded PDF"""
+    print(f"\n{'='*80}")
+    print("RETRIEVING ALL CHUNKS")
+    print(f"{'='*80}\n")
+    
+    response = requests.get(f"{BASE_URL}/chunks/")
+    
+    if response.status_code == 200:
+        result = response.json()
+        print(f"Total chunks: {result['total_chunks']}\n")
+        
+        for chunk in result['chunks']:
+            print(f"\n{'='*40}")
+            print(f"CHUNK {chunk['chunk_id'] + 1}")
+            print(f"{'='*40}")
+            print(f"Length: {chunk['length']} characters")
+            print(f"\nContent:\n{chunk['content']}")
+            print(f"\n{'-'*80}\n")
+        
+        return result
+    else:
+        print(f"✗ Error: {response.json()}")
+        return None
+
+def clear_pdf():
+    """Clear the uploaded PDF data"""
+    print(f"\n{'='*80}")
+    print("CLEARING PDF DATA")
+    print(f"{'='*80}\n")
+    
+    response = requests.delete(f"{BASE_URL}/clear-pdf/")
+    
+    if response.status_code == 200:
+        print(f"✓ {response.json()['message']}")
+        return True
+    else:
+        print(f"✗ Error: {response.json()}")
+        return False
+
+def main():
+    """Main testing function"""
+    print("""
+    ╔════════════════════════════════════════════════════════════════╗
+    ║          Azure QnA PDF Application - Test Client              ║
+    ╚════════════════════════════════════════════════════════════════╝
+    """)
+    
+    # Example usage
+    print("STEP 1: Upload a PDF")
+    print("Change 'your_document.pdf' to your actual PDF path")
+    pdf_path = input("Enter PDF path (or press Enter to skip): ").strip()
+    
+    if pdf_path:
+        upload_pdf(pdf_path)
+        
+        print("\n\nSTEP 2: View all chunks")
+        view_chunks = input("Do you want to view all chunks? (y/n): ").strip().lower()
+        if view_chunks == 'y':
+            get_all_chunks()
+        
+        print("\n\nSTEP 3: Ask questions")
+        while True:
+            question = input("\nEnter your question (or 'quit' to exit): ").strip()
+            if question.lower() == 'quit':
+                break
+            if question:
+                ask_question(question)
+        
+        print("\n\nSTEP 4: Clear data")
+        clear = input("Do you want to clear PDF data? (y/n): ").strip().lower()
+        if clear == 'y':
+            clear_pdf()
+    else:
+        print("\nSkipping upload. You can use the following commands manually:")
+        print("\n1. Upload PDF:")
+        print("   upload_pdf('path/to/your/file.pdf')")
+        print("\n2. Ask Question:")
+        print("   ask_question('What is this document about?')")
+        print("\n3. Get all chunks:")
+        print("   get_all_chunks()")
+        print("\n4. Clear PDF:")
+        print("   clear_pdf()")
+
+if __name__ == "__main__":
+    # You can also call functions directly:
+    # upload_pdf("sample.pdf")
+    # ask_question("What is the main topic of this document?")
+    # get_all_chunks()
+    # clear_pdf()
+    
+    main()
