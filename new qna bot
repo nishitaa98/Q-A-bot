@@ -181,3 +181,170 @@ async def upload_and_ask(file: UploadFile = File(...), question: str = Form(...)
 pip install -r requirements.txt
 
 uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+
+
+
+
+
+
+
+
+import os
+import io
+import asyncio
+from typing import Optional, Dict, Any
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from dotenv import load_dotenv
+import PyPDF2
+import openai
+
+load_dotenv()
+
+# Load config from .env
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "20000"))
+
+if not all([AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME]):
+    raise RuntimeError("Missing Azure OpenAI environment variables in .env")
+
+# Configure Azure OpenAI
+openai.api_type = "azure"
+openai.api_key = AZURE_OPENAI_KEY
+openai.api_base = AZURE_OPENAI_ENDPOINT.rstrip("/")
+openai.api_version = AZURE_OPENAI_API_VERSION
+
+app = FastAPI(title="PDF Q&A API - Azure OpenAI (No RAG)")
+
+
+# ----------------------------
+#  Response Model
+# ----------------------------
+class QAResponse(BaseModel):
+    answer: str
+    model: str
+    usage: Optional[Dict[str, Any]] = None
+    warning: Optional[str] = None
+
+
+# ----------------------------
+# PDF extraction
+# ----------------------------
+def extract_pdf_text(pdf_bytes: bytes) -> str:
+    reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+    text_parts = []
+
+    for page in reader.pages:
+        try:
+            extracted = page.extract_text() or ""
+            text_parts.append(extracted)
+        except Exception:
+            continue
+
+    return "\n".join(text_parts)
+
+
+# ----------------------------
+# Truncation helper
+# ----------------------------
+def truncate_text(text: str, limit: int):
+    if len(text) <= limit:
+        return text, False
+
+    head = int(limit * 0.6)
+    tail = limit - head
+
+    truncated = (
+        text[:head]
+        + "\n\n...[middle truncated]...\n\n"
+        + text[-tail:]
+    )
+    return truncated, True
+
+
+# ----------------------------
+# Azure OpenAI Chat call
+# ----------------------------
+async def ask_azure(messages: list, max_tokens: int):
+    loop = asyncio.get_event_loop()
+
+    def _call():
+        return openai.ChatCompletion.create(
+            engine=AZURE_OPENAI_DEPLOYMENT_NAME,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.0
+        )
+
+    return await loop.run_in_executor(None, _call)
+
+
+# ----------------------------
+# Main API Route
+# ----------------------------
+@app.post("/upload-and-ask", response_model=QAResponse)
+async def upload_and_ask(
+    file: UploadFile = File(...),
+    question: str = Form(...),
+    max_answer_tokens: int = Form(300)
+):
+    # Validate file
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Extract PDF text
+    pdf_text = extract_pdf_text(pdf_bytes)
+
+    if not pdf_text.strip():
+        raise HTTPException(status_code=400, detail="No text found in the PDF.")
+
+    # Truncate large documents
+    pdf_text, was_truncated = truncate_text(pdf_text, MAX_CONTEXT_CHARS)
+
+    # Build messages
+    system_msg = {
+        "role": "system",
+        "content": "You answer questions ONLY using the provided document. If info is missing, say so."
+    }
+
+    user_msg = {
+        "role": "user",
+        "content": f"""
+Document Content:
+----------------
+{pdf_text}
+
+User Question:
+{question}
+
+Answer strictly using the document content above.
+"""
+    }
+
+    # Call Azure OpenAI
+    try:
+        response = await ask_azure([system_msg, user_msg], max_answer_tokens)
+        answer = response["choices"][0]["message"]["content"]
+        usage = response.get("usage")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    warning = None
+    if was_truncated:
+        warning = f"Document truncated to {MAX_CONTEXT_CHARS} chars to fit model token limit."
+
+    return {
+        "answer": answer,
+        "model": AZURE_OPENAI_DEPLOYMENT_NAME,
+        "usage": usage,
+        "warning": warning
+    }
