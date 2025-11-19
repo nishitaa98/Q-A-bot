@@ -1,0 +1,350 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+python-dotenv==1.0.0
+openai==1.3.0
+PyMuPDF==1.23.8
+Pillow==10.1.0
+python-multipart==0.0.6
+pydantic==2.5.0
+
+
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
+import os
+from dotenv import load_dotenv
+import fitz  # PyMuPDF
+from PIL import Image
+import io
+import base64
+from openai import AzureOpenAI
+import re
+
+# Load environment variables
+load_dotenv()
+
+app = FastAPI(title="Azure QnA PDF Application")
+
+# Azure OpenAI Configuration
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_KEY"),
+    api_version=os.getenv("AZURE_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_ENDPOINT")
+)
+
+MODEL_NAME = os.getenv("MODEL_NAME")
+
+# Store chunks in memory (in production, use a database)
+pdf_chunks = []
+pdf_metadata = {}
+
+class QuestionRequest(BaseModel):
+    question: str
+    chunk_limit: Optional[int] = None  # Optional: limit chunks to send to LLM
+
+class PDFProcessor:
+    """Process PDF to extract text, images, tables, and diagrams"""
+    
+    @staticmethod
+    def extract_text_from_page(page):
+        """Extract text from a PDF page"""
+        return page.get_text()
+    
+    @staticmethod
+    def extract_images_from_page(page, page_num):
+        """Extract images from a PDF page"""
+        images = []
+        image_list = page.get_images(full=True)
+        
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            base_image = page.parent.extract_image(xref)
+            image_bytes = base_image["image"]
+            image_ext = base_image["ext"]
+            
+            # Convert to PIL Image
+            image = Image.open(io.BytesIO(image_bytes))
+            
+            # Convert image to base64 for vision API
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            images.append({
+                "page": page_num,
+                "index": img_index,
+                "format": image_ext,
+                "base64": img_base64,
+                "description": None  # Will be filled by vision model
+            })
+        
+        return images
+    
+    @staticmethod
+    def extract_tables_from_page(page, page_num):
+        """Extract tables from a PDF page"""
+        tables = []
+        # Get all tables from the page
+        tabs = page.find_tables()
+        
+        for tab_index, tab in enumerate(tabs):
+            table_data = tab.extract()
+            if table_data:
+                tables.append({
+                    "page": page_num,
+                    "index": tab_index,
+                    "data": table_data,
+                    "text_representation": PDFProcessor._table_to_text(table_data)
+                })
+        
+        return tables
+    
+    @staticmethod
+    def _table_to_text(table_data):
+        """Convert table data to text representation"""
+        text = "TABLE:\n"
+        for row in table_data:
+            text += " | ".join([str(cell) if cell else "" for cell in row]) + "\n"
+        return text
+    
+    @staticmethod
+    def describe_image_with_vision(image_base64):
+        """Use Azure OpenAI Vision to describe image content"""
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Describe this image in detail. If it's a diagram, chart, or graph, explain what it shows. If it contains text, extract it."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"Error describing image: {str(e)}"
+
+    @staticmethod
+    def chunk_content(text, chunk_size=1000, overlap=200):
+        """Split text into overlapping chunks"""
+        chunks = []
+        start = 0
+        text_length = len(text)
+        
+        while start < text_length:
+            end = start + chunk_size
+            chunk = text[start:end]
+            
+            # Try to break at sentence boundary
+            if end < text_length:
+                last_period = chunk.rfind('.')
+                last_newline = chunk.rfind('\n')
+                break_point = max(last_period, last_newline)
+                
+                if break_point > chunk_size * 0.5:  # At least 50% into chunk
+                    chunk = chunk[:break_point + 1]
+                    end = start + break_point + 1
+            
+            chunks.append(chunk.strip())
+            start = end - overlap
+        
+        return chunks
+
+@app.post("/upload-pdf/")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Upload and process PDF file"""
+    global pdf_chunks, pdf_metadata
+    
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    try:
+        # Read PDF file
+        pdf_bytes = await file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        # Reset chunks
+        pdf_chunks = []
+        all_content = []
+        
+        print(f"\n{'='*80}")
+        print(f"Processing PDF: {file.filename}")
+        print(f"Total Pages: {len(doc)}")
+        print(f"{'='*80}\n")
+        
+        # Process each page
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            print(f"\n--- PAGE {page_num + 1} ---\n")
+            
+            # Extract text
+            text = PDFProcessor.extract_text_from_page(page)
+            if text.strip():
+                print(f"TEXT CONTENT:\n{text[:500]}...\n")
+                all_content.append(f"[Page {page_num + 1} - Text]\n{text}")
+            
+            # Extract tables
+            tables = PDFProcessor.extract_tables_from_page(page, page_num + 1)
+            for table in tables:
+                print(f"TABLE {table['index'] + 1}:")
+                print(table['text_representation'][:300] + "...\n")
+                all_content.append(f"[Page {page_num + 1} - Table {table['index'] + 1}]\n{table['text_representation']}")
+            
+            # Extract images
+            images = PDFProcessor.extract_images_from_page(page, page_num + 1)
+            for image in images:
+                print(f"IMAGE {image['index'] + 1}: Analyzing with Vision API...")
+                description = PDFProcessor.describe_image_with_vision(image['base64'])
+                image['description'] = description
+                print(f"Description: {description[:200]}...\n")
+                all_content.append(f"[Page {page_num + 1} - Image/Diagram {image['index'] + 1}]\n{description}")
+        
+        # Combine all content
+        full_text = "\n\n".join(all_content)
+        
+        # Create chunks
+        chunks = PDFProcessor.chunk_content(full_text)
+        
+        print(f"\n{'='*80}")
+        print(f"CHUNKING SUMMARY")
+        print(f"{'='*80}")
+        print(f"Total chunks created: {len(chunks)}\n")
+        
+        for idx, chunk in enumerate(chunks):
+            pdf_chunks.append({
+                "chunk_id": idx,
+                "content": chunk,
+                "length": len(chunk)
+            })
+            print(f"CHUNK {idx + 1}:")
+            print(f"Length: {len(chunk)} characters")
+            print(f"Preview: {chunk[:300]}...")
+            print(f"{'-'*80}\n")
+        
+        pdf_metadata = {
+            "filename": file.filename,
+            "pages": len(doc),
+            "total_chunks": len(chunks)
+        }
+        
+        doc.close()
+        
+        return JSONResponse({
+            "message": "PDF processed successfully",
+            "metadata": pdf_metadata,
+            "chunks_created": len(pdf_chunks),
+            "chunks": [{"chunk_id": c["chunk_id"], "length": c["length"], "preview": c["content"][:200]} for c in pdf_chunks]
+        })
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+
+@app.post("/ask-question/")
+async def ask_question(request: QuestionRequest):
+    """Ask a question based on the uploaded PDF content"""
+    
+    if not pdf_chunks:
+        raise HTTPException(status_code=400, detail="No PDF has been uploaded yet")
+    
+    try:
+        # Prepare context from chunks
+        chunk_limit = request.chunk_limit or len(pdf_chunks)
+        context = "\n\n---\n\n".join([chunk["content"] for chunk in pdf_chunks[:chunk_limit]])
+        
+        # Create prompt
+        system_message = """You are a helpful assistant that answers questions based on provided document content. 
+        Provide clear, concise answers based solely on the information given.
+        If the answer is not in the provided content, say so clearly."""
+        
+        user_message = f"""Based on the following document content, please answer the question.
+
+DOCUMENT CONTENT:
+{context}
+
+QUESTION: {request.question}
+
+Please provide a clear and well-formatted answer."""
+
+        # Call Azure OpenAI
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        # Get and clean the answer
+        answer = response.choices[0].message.content
+        
+        # Clean up the answer - remove excessive newlines and formatting
+        answer = re.sub(r'\n{3,}', '\n\n', answer)  # Replace 3+ newlines with 2
+        answer = answer.strip()
+        
+        # Remove markdown artifacts if any
+        answer = re.sub(r'\\n', ' ', answer)  # Remove \n artifacts
+        answer = re.sub(r'\s+', ' ', answer)  # Normalize whitespace
+        answer = re.sub(r'\n\s*\n', '\n\n', answer)  # Clean up paragraph breaks
+        
+        return JSONResponse({
+            "question": request.question,
+            "answer": answer,
+            "chunks_used": chunk_limit,
+            "metadata": pdf_metadata
+        })
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing question: {str(e)}")
+
+@app.get("/chunks/")
+async def get_chunks():
+    """Get all chunks from the processed PDF"""
+    if not pdf_chunks:
+        raise HTTPException(status_code=400, detail="No PDF has been uploaded yet")
+    
+    return JSONResponse({
+        "metadata": pdf_metadata,
+        "total_chunks": len(pdf_chunks),
+        "chunks": pdf_chunks
+    })
+
+@app.delete("/clear-pdf/")
+async def clear_pdf():
+    """Clear the current PDF data"""
+    global pdf_chunks, pdf_metadata
+    pdf_chunks = []
+    pdf_metadata = {}
+    return JSONResponse({"message": "PDF data cleared successfully"})
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Azure QnA PDF Application",
+        "endpoints": {
+            "upload": "/upload-pdf/",
+            "ask": "/ask-question/",
+            "chunks": "/chunks/",
+            "clear": "/clear-pdf/"
+        }
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
