@@ -1,0 +1,83 @@
+from fastapi import FastAPI, UploadFile, File
+import pdfplumber
+from azure.ai.openai import OpenAIClient
+from azure.core.credentials import AzureKeyCredential
+import os
+
+app = FastAPI()
+
+# 1. Azure OpenAI Credentials
+AZURE_OPENAI_ENDPOINT = "YOUR_ENDPOINT"
+AZURE_OPENAI_KEY = "YOUR_KEY"
+DEPLOYMENT_NAME_EMBED = "embedding-model"
+DEPLOYMENT_NAME_LLM = "gpt-4o-mini"
+
+client = OpenAIClient(
+    endpoint=AZURE_OPENAI_ENDPOINT,
+    credential=AzureKeyCredential(AZURE_OPENAI_KEY)
+)
+
+# -----------------------------------------------------------
+# STEP 1: Upload PDF + Extract Text
+# -----------------------------------------------------------
+
+def extract_pdf_text(pdf_file):
+    with pdfplumber.open(pdf_file) as pdf:
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+    return text.strip()
+
+
+# -----------------------------------------------------------
+# STEP 2: Convert Extracted Text → Embeddings
+# -----------------------------------------------------------
+
+def get_embeddings(text):
+    embed = client.embeddings.create(
+        model=DEPLOYMENT_NAME_EMBED,
+        input=text
+    )
+    return embed.data[0].embedding
+
+
+# -----------------------------------------------------------
+# STEP 3: Generate Testcases using LLM
+# -----------------------------------------------------------
+
+def generate_testcases(text):
+    response = client.chat.completions.create(
+        model=DEPLOYMENT_NAME_LLM,
+        messages=[
+            {"role": "system", "content": "You generate testcases from text."},
+            {"role": "user", "content": f"Generate detailed testcases based on this content:\n\n{text}"}
+        ]
+    )
+    return response.choices[0].message["content"]
+
+
+# -----------------------------------------------------------
+# API ROUTE
+# -----------------------------------------------------------
+
+@app.post("/process_pdf")
+async def process_pdf(file: UploadFile = File(...)):
+    # Save temp PDF
+    temp_path = "temp_pdf.pdf"
+    with open(temp_path, "wb") as f:
+        f.write(await file.read())
+
+    # STEP 1: Extract Text
+    extracted_text = extract_pdf_text(temp_path)
+
+    # STEP 2: Generate Embedding
+    embedding_vector = get_embeddings(extracted_text)
+
+    # STEP 3: LLM Testcase Generation
+    testcases = generate_testcases(extracted_text)
+
+    return {
+        "step_1_pdf_text_extracted": extracted_text,
+        "step_2_embedding_vector_first_10_dims": embedding_vector[:10],
+        "step_3_generated_testcases": testcases
+    }
