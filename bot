@@ -1,3 +1,35 @@
+
+from fastapi import FastAPI
+import subprocess
+
+app = FastAPI()
+
+@app.get("/run-bat")
+def run_bat_file():
+    bat_path = r"C:\scripts\process.bat"
+
+    try:
+        result = subprocess.run(
+            [bat_path],
+            shell=True,
+            capture_output=True,
+            text=True
+        )
+        return {
+            "status": "success",
+            "output": result.stdout,
+            "error": result.stderr
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+
+
+
+
+
+
 # -*- coding: utf-8 -*-
 """RAG_YouTube_Tutorial.ipynb
 
