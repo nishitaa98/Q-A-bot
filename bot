@@ -1,28 +1,44 @@
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import subprocess
 
 app = FastAPI()
 
-@app.get("/run-bat")
-def run_bat_file():
-    bat_path = r"C:\scripts\process.bat"
+# Allow Next.js to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+BAT_FILE_PATH = r"C:\scripts\process.bat"   # <<< UPDATE THIS
+
+@app.get("/run-bat")
+def run_bat():
     try:
+        # Run .bat file
         result = subprocess.run(
-            [bat_path],
+            [BAT_FILE_PATH],
             shell=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=5  # prevents slow output (max 5 seconds)
         )
+
         return {
             "status": "success",
-            "output": result.stdout,
-            "error": result.stderr
+            "stdout": result.stdout,
+            "stderr": result.stderr
         }
+
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "BAT execution timeout!"}
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
 
 
 
