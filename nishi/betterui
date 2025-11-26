@@ -1,0 +1,1398 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { Menu, LogOut, Home, FileText, DollarSign, Zap, User, TrendingUp, Shield } from "lucide-react";
+
+export default function SBIApp() {
+  const [currentPage, setCurrentPage] = useState("welcome");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeService, setActiveService] = useState("home");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [departmentCode, setDepartmentCode] = useState(0);
+  const [message, setMessage] = useState("");
+  
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  
+  const [region, setRegion] = useState("O");
+  const [noCif, setNoCif] = useState(1);
+  const [accType, setAccType] = useState("PCIF");
+  const [cifResponse, setCifResponse] = useState([]);
+  const [cifLoading, setCifLoading] = useState(false);
+
+  useEffect(() => {
+    const storedToken = localStorage.getItem('token');
+    if (storedToken) {
+      setToken(storedToken);
+      fetchUserProfile(storedToken);
+    }
+  }, []);
+
+  const fetchUserProfile = async (authToken) => {
+    try {
+      setLoading(true);
+      const response = await fetch("http://10.1.161.165:5050/users/me/", {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+          "Authorization": `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) throw new Error("Failed to fetch user data");
+
+      const userData = await response.json();
+      setUser(userData);
+      setIsLoggedIn(true);
+      setCurrentPage("dashboard");
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Failed to fetch user profile");
+      localStorage.removeItem('token');
+      setToken(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("http://10.1.161.165:5050/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username, password }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Login failed");
+      }
+
+      const data = await response.json();
+      const authToken = data.access_token;
+      localStorage.setItem('token', authToken);
+      setToken(authToken);
+      setUsername("");
+      setPassword("");
+      
+      await fetchUserProfile(authToken);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    
+    if (password !== confirmPassword) {
+      setMessage("Passwords do not match");
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("http://10.1.161.164:5050/user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username, password, firstName, lastName,
+          departmentCode: Number(departmentCode),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setMessage("Registration successful! Redirecting to login...");
+        setTimeout(() => {
+          setCurrentPage("login");
+          setUsername("");
+          setPassword("");
+          setConfirmPassword("");
+          setFirstName("");
+          setLastName("");
+          setDepartmentCode(0);
+        }, 2000);
+      } else {
+        setMessage(`Error: ${data.detail}`);
+      }
+    } catch (error) {
+      setMessage("An unexpected error occurred. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setToken(null);
+    setUser(null);
+    setIsLoggedIn(false);
+    setCurrentPage("welcome");
+    setActiveService("home");
+  };
+
+  const handleCifSubmit = async (e) => {
+    e.preventDefault();
+    setCifLoading(true);
+
+    try {
+      const res = await fetch("http://10.1.161.199:5050/create_cif/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          region, no_cif: parseInt(noCif, 10), acc_type: accType,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      setCifResponse(data);
+    } catch (error) {
+      setCifResponse([{ res_data: JSON.stringify({ ERROR_DESCRIPTION: error.message }) }]);
+    } finally {
+      setCifLoading(false);
+    }
+  };
+
+  const downloadCsv = () => {
+    if (!cifResponse || cifResponse.length === 0) {
+      alert("No data to download.");
+      return;
+    }
+
+    let csvContent = "data:text/csv;charset=utf-8,Customer Number\n";
+    cifResponse.forEach((item) => {
+      try {
+        const parsedResData = JSON.parse(item.res_data);
+        csvContent += `"${parsedResData.CUSTOMER_NUMBER || ""}"\n`;
+      } catch (e) {
+        console.error("CSV parse error:", e);
+      }
+    });
+
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", "cif_data.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Welcome Page
+  if (currentPage === "welcome" && !isLoggedIn) {
+    return (
+      <div style={styles.welcomeContainer}>
+        <nav style={styles.navbar}>
+          <div style={styles.navBrand}>
+            <div style={styles.logoCircle}>SBI</div>
+            <span style={styles.brandText}>State Bank of India</span>
+          </div>
+          <div style={styles.navLinks}>
+            <button onClick={() => setCurrentPage("login")} style={styles.navBtn}>
+              Sign In
+            </button>
+            <button onClick={() => setCurrentPage("register")} style={styles.navBtnPrimary}>
+              Get Started
+            </button>
+          </div>
+        </nav>
+
+        <div style={styles.heroSection}>
+          <div style={styles.heroContent}>
+            <div style={styles.heroTag}>AUTOMATED TEST DATA PLATFORM</div>
+            <h1 style={styles.heroTitle}>
+              Advanced Banking<br/>Test Data Creation
+            </h1>
+            <p style={styles.heroSubtitle}>
+              Streamline your testing workflow with automated CIF, CCOD, and deposit account generation
+            </p>
+            <div style={styles.heroButtons}>
+              <button onClick={() => setCurrentPage("login")} style={styles.heroPrimaryBtn}>
+                Get Started
+                <span style={styles.btnArrow}>→</span>
+              </button>
+              <button onClick={() => setCurrentPage("register")} style={styles.heroSecondaryBtn}>
+                Learn More
+              </button>
+            </div>
+          </div>
+          
+          <div style={styles.featuresGrid}>
+            <div style={styles.featureCard}>
+              <Shield size={32} color="#003478" />
+              <h3>Secure & Reliable</h3>
+              <p>Enterprise-grade security for your test data</p>
+            </div>
+            <div style={styles.featureCard}>
+              <TrendingUp size={32} color="#003478" />
+              <h3>High Performance</h3>
+              <p>Generate test data at scale efficiently</p>
+            </div>
+            <div style={styles.featureCard}>
+              <FileText size={32} color="#003478" />
+              <h3>Complete Records</h3>
+              <p>Full CIF and account data creation</p>
+            </div>
+          </div>
+        </div>
+
+        <footer style={styles.footer}>
+          <p>© 2025 State Bank of India. All rights reserved.</p>
+        </footer>
+      </div>
+    );
+  }
+
+  // Login Page
+  if (currentPage === "login" && !isLoggedIn) {
+    return (
+      <div style={styles.authContainer}>
+        <div style={styles.authSplit}>
+          <div style={styles.authLeft}>
+            <div style={styles.authBrand}>
+              <div style={styles.logoCircle}>SBI</div>
+              <span style={styles.brandText}>State Bank of India</span>
+            </div>
+            <h1 style={styles.authLeftTitle}>Welcome Back</h1>
+            <p style={styles.authLeftSubtitle}>
+              Sign in to access your test data creation platform
+            </p>
+            <div style={styles.authFeatureList}>
+              <div style={styles.authFeature}>✓ Automated CIF Generation</div>
+              <div style={styles.authFeature}>✓ CCOD Account Creation</div>
+              <div style={styles.authFeature}>✓ Deposit Management</div>
+            </div>
+          </div>
+
+          <div style={styles.authRight}>
+            <div style={styles.authForm}>
+              <button onClick={() => setCurrentPage("welcome")} style={styles.backLink}>
+                ← Back to Home
+              </button>
+              <h2 style={styles.authTitle}>Sign In</h2>
+              <p style={styles.authSubtitle}>Enter your credentials to continue</p>
+              
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Username</label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  style={styles.input}
+                  placeholder="Enter your username"
+                  required
+                />
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  style={styles.input}
+                  placeholder="Enter your password"
+                  required
+                />
+              </div>
+              
+              {error && <div style={styles.errorMsg}>{error}</div>}
+              
+              <button onClick={handleLogin} style={styles.submitBtn} disabled={loading}>
+                {loading ? "Signing in..." : "Sign In"}
+              </button>
+              
+              <div style={styles.divider}>
+                <span style={styles.dividerText}>Don't have an account?</span>
+              </div>
+              
+              <button 
+                onClick={() => { setCurrentPage("register"); setError(""); }} 
+                style={styles.switchBtn}
+              >
+                Create Account
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Register Page
+  if (currentPage === "register" && !isLoggedIn) {
+    return (
+      <div style={styles.authContainer}>
+        <div style={styles.authSplit}>
+          <div style={styles.authLeft}>
+            <div style={styles.authBrand}>
+              <div style={styles.logoCircle}>SBI</div>
+              <span style={styles.brandText}>State Bank of India</span>
+            </div>
+            <h1 style={styles.authLeftTitle}>Join Our Platform</h1>
+            <p style={styles.authLeftSubtitle}>
+              Create an account to start generating test data
+            </p>
+            <div style={styles.authFeatureList}>
+              <div style={styles.authFeature}>✓ Quick Setup Process</div>
+              <div style={styles.authFeature}>✓ Secure Authentication</div>
+              <div style={styles.authFeature}>✓ Full Platform Access</div>
+            </div>
+          </div>
+
+          <div style={styles.authRight}>
+            <div style={styles.authForm}>
+              <button onClick={() => setCurrentPage("welcome")} style={styles.backLink}>
+                ← Back to Home
+              </button>
+              <h2 style={styles.authTitle}>Create Account</h2>
+              <p style={styles.authSubtitle}>Fill in your details to get started</p>
+              
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Username</label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  style={styles.input}
+                  placeholder="Choose a username"
+                  required
+                />
+              </div>
+              
+              <div style={styles.formRow}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>First Name</label>
+                  <input
+                    type="text"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    style={styles.input}
+                    placeholder="First name"
+                    required
+                  />
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Last Name</label>
+                  <input
+                    type="text"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    style={styles.input}
+                    placeholder="Last name"
+                    required
+                  />
+                </div>
+              </div>
+              
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Department Code</label>
+                <input
+                  type="number"
+                  value={departmentCode}
+                  onChange={(e) => setDepartmentCode(e.target.value)}
+                  style={styles.input}
+                  placeholder="Enter department code"
+                  required
+                />
+              </div>
+              
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  style={styles.input}
+                  placeholder="Create a password"
+                  required
+                />
+              </div>
+              
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Confirm Password</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  style={styles.input}
+                  placeholder="Confirm your password"
+                  required
+                />
+              </div>
+              
+              {message && (
+                <div style={{
+                  ...styles.errorMsg,
+                  backgroundColor: message.startsWith("Error") ? "#ffebee" : "#e8f5e9",
+                  color: message.startsWith("Error") ? "#c62828" : "#2e7d32"
+                }}>
+                  {message}
+                </div>
+              )}
+              
+              <button onClick={handleRegister} style={styles.submitBtn} disabled={loading}>
+                {loading ? "Creating Account..." : "Create Account"}
+              </button>
+              
+              <div style={styles.divider}>
+                <span style={styles.dividerText}>Already have an account?</span>
+              </div>
+              
+              <button 
+                onClick={() => { setCurrentPage("login"); setMessage(""); }} 
+                style={styles.switchBtn}
+              >
+                Sign In Instead
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Dashboard
+  if (isLoggedIn && user) {
+    return (
+      <div style={styles.dashboardContainer}>
+        <nav style={styles.dashboardNav}>
+          <div style={styles.dashNavLeft}>
+            <button onClick={() => setSidebarOpen(!sidebarOpen)} style={styles.menuBtn}>
+              <Menu size={20} />
+            </button>
+            <div style={styles.navBrand}>
+              <div style={styles.logoCircleSmall}>SBI</div>
+              <span style={styles.brandTextSmall}>Test Data Platform</span>
+            </div>
+          </div>
+          <div style={styles.dashNavRight}>
+            <div style={styles.userInfo}>
+              <div style={styles.userAvatar}>{user.firstName?.charAt(0)}{user.lastName?.charAt(0)}</div>
+              <div style={styles.userDetails}>
+                <div style={styles.userNameNav}>{user.firstName} {user.lastName}</div>
+                <div style={styles.userRole}>Dept {user.departmentCode}</div>
+              </div>
+            </div>
+            <button onClick={handleLogout} style={styles.logoutBtnNav}>
+              <LogOut size={18} />
+            </button>
+          </div>
+        </nav>
+
+        <div style={styles.mainContainer}>
+          <aside style={{ ...styles.sidebar, width: sidebarOpen ? "260px" : "0", padding: sidebarOpen ? "1.5rem 0" : "0", overflow: "hidden" }}>
+            {sidebarOpen && (
+              <div style={styles.sidebarContent}>
+                <div style={styles.sidebarSection}>
+                  <div style={styles.sidebarLabel}>MAIN MENU</div>
+                  <button
+                    onClick={() => setActiveService("home")}
+                    style={{
+                      ...styles.sidebarBtn,
+                      backgroundColor: activeService === "home" ? "#e3f2fd" : "transparent",
+                      color: activeService === "home" ? "#003478" : "#666",
+                      fontWeight: activeService === "home" ? "600" : "normal",
+                    }}
+                  >
+                    <Home size={20} />
+                    Dashboard
+                  </button>
+                </div>
+
+                <div style={styles.sidebarSection}>
+                  <div style={styles.sidebarLabel}>SERVICES</div>
+                  <button
+                    onClick={() => setActiveService("cif")}
+                    style={{
+                      ...styles.sidebarBtn,
+                      backgroundColor: activeService === "cif" ? "#e3f2fd" : "transparent",
+                      color: activeService === "cif" ? "#003478" : "#666",
+                      fontWeight: activeService === "cif" ? "600" : "normal",
+                    }}
+                  >
+                    <FileText size={20} />
+                    CIF Creation
+                  </button>
+                  <button
+                    onClick={() => setActiveService("ccod")}
+                    style={{
+                      ...styles.sidebarBtn,
+                      backgroundColor: activeService === "ccod" ? "#e3f2fd" : "transparent",
+                      color: activeService === "ccod" ? "#003478" : "#666",
+                      fontWeight: activeService === "ccod" ? "600" : "normal",
+                    }}
+                  >
+                    <DollarSign size={20} />
+                    CCOD Account
+                  </button>
+                  <button
+                    onClick={() => setActiveService("deposit")}
+                    style={{
+                      ...styles.sidebarBtn,
+                      backgroundColor: activeService === "deposit" ? "#e3f2fd" : "transparent",
+                      color: activeService === "deposit" ? "#003478" : "#666",
+                      fontWeight: activeService === "deposit" ? "600" : "normal",
+                    }}
+                  >
+                    <Zap size={20} />
+                    Deposit Account
+                  </button>
+                </div>
+              </div>
+            )}
+          </aside>
+
+          <main style={styles.content}>
+            {activeService === "home" && (
+              <div>
+                <div style={styles.pageHeader}>
+                  <div>
+                    <h1 style={styles.pageTitle}>Dashboard</h1>
+                    <p style={styles.pageSubtitle}>Welcome back, {user.firstName}! Here's your overview</p>
+                  </div>
+                </div>
+
+                <div style={styles.statsGrid}>
+                  <div style={styles.statCard}>
+                    <div style={{...styles.statIcon, backgroundColor: "#e3f2fd"}}>
+                      <FileText size={24} color="#003478" />
+                    </div>
+                    <div style={styles.statContent}>
+                      <div style={styles.statLabel}>CIF Records</div>
+                      <div style={styles.statValue}>0</div>
+                    </div>
+                  </div>
+                  <div style={styles.statCard}>
+                    <div style={{...styles.statIcon, backgroundColor: "#fff3e0"}}>
+                      <DollarSign size={24} color="#f57c00" />
+                    </div>
+                    <div style={styles.statContent}>
+                      <div style={styles.statLabel}>CCOD Accounts</div>
+                      <div style={styles.statValue}>0</div>
+                    </div>
+                  </div>
+                  <div style={styles.statCard}>
+                    <div style={{...styles.statIcon, backgroundColor: "#e8f5e9"}}>
+                      <Zap size={24} color="#2e7d32" />
+                    </div>
+                    <div style={styles.statContent}>
+                      <div style={styles.statLabel}>Deposits</div>
+                      <div style={styles.statValue}>0</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.userProfileCard}>
+                  <div style={styles.profileHeader}>
+                    <User size={24} color="#003478" />
+                    <h2 style={styles.profileTitle}>Profile Information</h2>
+                  </div>
+                  <div style={styles.profileGrid}>
+                    <div style={styles.profileItem}>
+                      <span style={styles.profileLabel}>Username</span>
+                      <span style={styles.profileValue}>{user.username}</span>
+                    </div>
+                    <div style={styles.profileItem}>
+                      <span style={styles.profileLabel}>First Name</span>
+                      <span style={styles.profileValue}>{user.firstName}</span>
+                    </div>
+                    <div style={styles.profileItem}>
+                      <span style={styles.profileLabel}>Last Name</span>
+                      <span style={styles.profileValue}>{user.lastName}</span>
+                    </div>
+                    <div style={styles.profileItem}>
+                      <span style={styles.profileLabel}>Department Code</span>
+                      <span style={styles.profileValue}>{user.departmentCode}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeService === "cif" && (
+              <div>
+                <div style={styles.pageHeader}>
+                  <div>
+                    <h1 style={styles.pageTitle}>CIF Creation</h1>
+                    <p style={styles.pageSubtitle}>Generate Customer Information Files for testing</p>
+                  </div>
+                </div>
+
+                <div style={styles.formCard}>
+                  <div style={styles.formGrid}>
+                    <div style={styles.formGroup}>
+                      <label style={styles.label}>Region</label>
+                      <select value={region} onChange={(e) => setRegion(e.target.value)} style={styles.select}>
+                        <option value="X">X - UAT</option>
+                        <option value="O">O - UAT</option>
+                        <option value="Y">Y - UAT</option>
+                        <option value="Z">Z - UAT</option>
+                        <option value="K">K - Pre-Prod</option>
+                        <option value="J">J - Pre-Prod</option>
+                        <option value="R1">R1 - Pre-Prod</option>
+                        <option value="Y2">Y2 - Pre-Prod</option>
+                        <option value="L">L - Pre-Prod</option>
+                        <option value="C">C - Pre-Prod</option>
+                      </select>
+                    </div>
+                    <div style={styles.formGroup}>
+                      <label style={styles.label}>Number of CIF</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={noCif}
+                        onChange={(e) => setNoCif(e.target.value)}
+                        style={styles.input}
+                        placeholder="Enter quantity (1-10)"
+                      />
+                    </div>
+                    <div style={styles.formGroup}>
+                      <label style={styles.label}>Account Type</label>
+                      <select value={accType} onChange={(e) => setAccType(e.target.value)} style={styles.select}>
+                        <option value="PCIF">Personal CIF Creation</option>
+                        <option value="NPCIF">Non-Personal CIF Creation</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button onClick={handleCifSubmit} style={styles.primaryButton} disabled={cifLoading}>
+                    {cifLoading ? "Generating..." : "Generate CIF Records"}
+                  </button>
+                </div>
+
+                {cifResponse && cifResponse.length > 0 && (
+                  <div style={styles.resultsCard}>
+                    <div style={styles.resultsHeader}>
+                      <h3 style={styles.resultsTitle}>Generated Records ({cifResponse.length})</h3>
+                      <button onClick={downloadCsv} style={styles.downloadButton}>
+                        Download CSV
+                      </button>
+                    </div>
+                    <div style={styles.resultsList}>
+                      {cifResponse.map((item, index) => {
+                        try {
+                          const parsedResData = JSON.parse(item.res_data);
+                          return (
+                            <div key={index} style={styles.resultItem}>
+                              <div style={styles.resultNumber}>{index + 1}</div>
+                              <div style={styles.resultContent}>
+                                <span style={styles.resultLabel}>Customer Number:</span>
+                                <span style={styles.resultValue}>{parsedResData.CUSTOMER_NUMBER}</span>
+                              </div>
+                            </div>
+                          );
+                        } catch (e) {
+                          return (
+                            <div key={index} style={{...styles.resultItem, borderLeft: "3px solid #f44336"}}>
+                              <span style={styles.errorText}>Error: {item.res_data}</span>
+                            </div>
+                          );
+                        }
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeService === "ccod" && (
+              <div>
+                <div style={styles.pageHeader}>
+                  <div>
+                    <h1 style={styles.pageTitle}>CCOD Account Creation</h1>
+                    <p style={styles.pageSubtitle}>Create Cash Credit Overdraft accounts</p>
+                  </div>
+                </div>
+                <div style={styles.comingSoonCard}>
+                  <DollarSign size={48} color="#f57c00" />
+                  <h3 style={styles.comingSoonTitle}>Coming Soon</h3>
+                  <p style={styles.comingSoonText}>CCOD account creation feature is under development</p>
+                </div>
+              </div>
+            )}
+
+            {activeService === "deposit" && (
+              <div>
+                <div style={styles.pageHeader}>
+                  <div>
+                    <h1 style={styles.pageTitle}>Deposit Account Creation</h1>
+                    <p style={styles.pageSubtitle}>Generate deposit accounts for testing</p>
+                  </div>
+                </div>
+                <div style={styles.comingSoonCard}>
+                  <Zap size={48} color="#2e7d32" />
+                  <h3 style={styles.comingSoonTitle}>Coming Soon</h3>
+                  <p style={styles.comingSoonText}>Deposit account creation feature is under development</p>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div style={styles.loadingContainer}>
+        <div style={styles.spinner}></div>
+        <p style={styles.loadingText}>Loading...</p>
+      </div>
+    );
+  }
+}
+
+const styles = {
+  welcomeContainer: {
+    minHeight: "100vh",
+    backgroundColor: "#f8fafc",
+    display: "flex",
+    flexDirection: "column",
+  },
+  navbar: {
+    backgroundColor: "white",
+    padding: "1.25rem 3rem",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottom: "1px solid #e2e8f0",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  navBrand: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+  },
+  logoCircle: {
+    width: "40px",
+    height: "40px",
+    borderRadius: "8px",
+    backgroundColor: "#003478",
+    color: "white",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: "bold",
+    fontSize: "0.9rem",
+  },
+  logoCircleSmall: {
+    width: "32px",
+    height: "32px",
+    borderRadius: "6px",
+    backgroundColor: "#003478",
+    color: "white",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: "bold",
+    fontSize: "0.75rem",
+  },
+  brandText: {
+    fontSize: "1.25rem",
+    fontWeight: "600",
+    color: "#1e293b",
+  },
+  brandTextSmall: {
+    fontSize: "1rem",
+    fontWeight: "600",
+    color: "#1e293b",
+  },
+  navLinks: {
+    display: "flex",
+    gap: "0.75rem",
+  },
+  navBtn: {
+    padding: "0.625rem 1.5rem",
+    border: "1px solid #cbd5e1",
+    backgroundColor: "white",
+    color: "#475569",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "0.9rem",
+    fontWeight: "500",
+    transition: "all 0.2s",
+  },
+  navBtnPrimary: {
+    padding: "0.625rem 1.5rem",
+    border: "none",
+    backgroundColor: "#003478",
+    color: "white",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "0.9rem",
+    fontWeight: "500",
+  },
+  heroSection: {
+    flex: 1,
+    display: "flex",
+    padding: "3rem 3rem",
+    gap: "3rem",
+    alignItems: "center",
+  },
+  heroContent: {
+    flex: 1,
+  },
+  heroTag: {
+    display: "inline-block",
+    backgroundColor: "#e3f2fd",
+    color: "#003478",
+    padding: "0.5rem 1rem",
+    borderRadius: "20px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    marginBottom: "1rem",
+  },
+  heroTitle: {
+    fontSize: "3.5rem",
+    fontWeight: "700",
+    color: "#1e293b",
+    marginBottom: "1rem",
+    lineHeight: "1.2",
+  },
+  heroSubtitle: {
+    fontSize: "1.125rem",
+    color: "#64748b",
+    marginBottom: "2rem",
+  },
+  heroButtons: {
+    display: "flex",
+    gap: "1rem",
+  },
+  heroPrimaryBtn: {
+    padding: "0.875rem 2rem",
+    backgroundColor: "#003478",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    fontWeight: "600",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  heroSecondaryBtn: {
+    padding: "0.875rem 2rem",
+    backgroundColor: "white",
+    color: "#003478",
+    border: "2px solid #003478",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    fontWeight: "600",
+  },
+  btnArrow: {
+    fontSize: "1.25rem",
+  },
+  featuresGrid: {
+    flex: 1,
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: "1rem",
+  },
+  featureCard: {
+    backgroundColor: "white",
+    padding: "1.5rem",
+    borderRadius: "8px",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+  },
+  footer: {
+    backgroundColor: "#f1f5f9",
+    padding: "2rem",
+    textAlign: "center",
+    borderTop: "1px solid #e2e8f0",
+    color: "#64748b",
+  },
+  authContainer: {
+    minHeight: "100vh",
+    display: "flex",
+    backgroundColor: "#f8fafc",
+  },
+  authSplit: {
+    display: "flex",
+    width: "100%",
+  },
+  authLeft: {
+    flex: 1,
+    backgroundColor: "#003478",
+    color: "white",
+    padding: "3rem",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+  },
+  authBrand: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    marginBottom: "2rem",
+  },
+  authLeftTitle: {
+    fontSize: "2.5rem",
+    fontWeight: "700",
+    marginBottom: "0.5rem",
+  },
+  authLeftSubtitle: {
+    fontSize: "1rem",
+    opacity: 0.9,
+    marginBottom: "2rem",
+  },
+  authFeatureList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.75rem",
+  },
+  authFeature: {
+    fontSize: "0.95rem",
+    opacity: 0.9,
+  },
+  authRight: {
+    flex: 1,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "3rem",
+    backgroundColor: "white",
+  },
+  authForm: {
+    width: "100%",
+    maxWidth: "400px",
+  },
+  backLink: {
+    backgroundColor: "transparent",
+    border: "none",
+    color: "#0284c7",
+    cursor: "pointer",
+    fontSize: "0.9rem",
+    fontWeight: "500",
+    marginBottom: "2rem",
+  },
+  authTitle: {
+    fontSize: "1.75rem",
+    fontWeight: "700",
+    color: "#1e293b",
+    marginBottom: "0.5rem",
+  },
+  authSubtitle: {
+    color: "#64748b",
+    marginBottom: "1.5rem",
+    fontSize: "0.95rem",
+  },
+  formGroup: {
+    marginBottom: "1.25rem",
+  },
+  formRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: "1rem",
+  },
+  label: {
+    display: "block",
+    fontWeight: "500",
+    marginBottom: "0.5rem",
+    color: "#1e293b",
+    fontSize: "0.9rem",
+  },
+  input: {
+    width: "100%",
+    padding: "0.75rem",
+    border: "1px solid #cbd5e1",
+    borderRadius: "6px",
+    fontSize: "0.95rem",
+    boxSizing: "border-box",
+    fontFamily: "inherit",
+  },
+  select: {
+    width: "100%",
+    padding: "0.75rem",
+    border: "1px solid #cbd5e1",
+    borderRadius: "6px",
+    fontSize: "0.95rem",
+    boxSizing: "border-box",
+    fontFamily: "inherit",
+    backgroundColor: "white",
+    cursor: "pointer",
+  },
+  errorMsg: {
+    backgroundColor: "#fee2e2",
+    color: "#991b1b",
+    padding: "0.875rem",
+    borderRadius: "6px",
+    marginBottom: "1rem",
+    fontSize: "0.9rem",
+  },
+  submitBtn: {
+    width: "100%",
+    padding: "0.875rem",
+    backgroundColor: "#003478",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    fontSize: "1rem",
+    fontWeight: "600",
+    cursor: "pointer",
+    marginTop: "0.5rem",
+  },
+  divider: {
+    display: "flex",
+    alignItems: "center",
+    margin: "1.5rem 0",
+  },
+  dividerText: {
+    color: "#94a3b8",
+    fontSize: "0.9rem",
+  },
+  switchBtn: {
+    width: "100%",
+    padding: "0.875rem",
+    backgroundColor: "#e3f2fd",
+    color: "#003478",
+    border: "none",
+    borderRadius: "6px",
+    fontSize: "1rem",
+    fontWeight: "600",
+    cursor: "pointer",
+  },
+  dashboardContainer: {
+    minHeight: "100vh",
+    backgroundColor: "#f8fafc",
+    display: "flex",
+    flexDirection: "column",
+  },
+  dashboardNav: {
+    backgroundColor: "white",
+    padding: "1rem 2rem",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottom: "1px solid #e2e8f0",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  dashNavLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: "1rem",
+  },
+  dashNavRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "1.5rem",
+  },
+  menuBtn: {
+    backgroundColor: "transparent",
+    border: "none",
+    cursor: "pointer",
+    color: "#475569",
+  },
+  userInfo: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+  },
+  userAvatar: {
+    width: "40px",
+    height: "40px",
+    borderRadius: "6px",
+    backgroundColor: "#003478",
+    color: "white",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: "bold",
+    fontSize: "0.85rem",
+  },
+  userDetails: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  userNameNav: {
+    fontWeight: "600",
+    color: "#1e293b",
+    fontSize: "0.9rem",
+  },
+  userRole: {
+    fontSize: "0.8rem",
+    color: "#64748b",
+  },
+  logoutBtnNav: {
+    backgroundColor: "#fee2e2",
+    border: "none",
+    cursor: "pointer",
+    padding: "0.5rem",
+    borderRadius: "6px",
+    color: "#991b1b",
+  },
+  mainContainer: {
+    display: "flex",
+    flex: 1,
+  },
+  sidebar: {
+    backgroundColor: "white",
+    borderRight: "1px solid #e2e8f0",
+    transition: "all 0.3s",
+    overflowY: "auto",
+  },
+  sidebarContent: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2rem",
+  },
+  sidebarSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+    paddingRight: "1.5rem",
+  },
+  sidebarLabel: {
+    fontSize: "0.75rem",
+    fontWeight: "700",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    paddingLeft: "1rem",
+    marginBottom: "0.5rem",
+  },
+  sidebarBtn: {
+    padding: "0.75rem 1rem",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    fontSize: "0.95rem",
+    transition: "all 0.2s",
+  },
+  content: {
+    flex: 1,
+    padding: "2rem",
+    overflowY: "auto",
+  },
+  pageHeader: {
+    marginBottom: "2rem",
+  },
+  pageTitle: {
+    fontSize: "2rem",
+    fontWeight: "700",
+    color: "#1e293b",
+    marginBottom: "0.25rem",
+  },
+  pageSubtitle: {
+    color: "#64748b",
+    fontSize: "1rem",
+  },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: "1.5rem",
+    marginBottom: "2rem",
+  },
+  statCard: {
+    backgroundColor: "white",
+    padding: "1.5rem",
+    borderRadius: "8px",
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "1rem",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  statIcon: {
+    width: "50px",
+    height: "50px",
+    borderRadius: "6px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  statContent: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  statLabel: {
+    fontSize: "0.85rem",
+    color: "#64748b",
+    fontWeight: "500",
+  },
+  statValue: {
+    fontSize: "1.75rem",
+    fontWeight: "700",
+    color: "#1e293b",
+  },
+  userProfileCard: {
+    backgroundColor: "white",
+    padding: "2rem",
+    borderRadius: "8px",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  profileHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    marginBottom: "1.5rem",
+  },
+  profileTitle: {
+    fontSize: "1.25rem",
+    fontWeight: "700",
+    color: "#1e293b",
+  },
+  profileGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, 1fr)",
+    gap: "1.5rem",
+  },
+  profileItem: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  profileLabel: {
+    fontSize: "0.85rem",
+    color: "#64748b",
+    fontWeight: "500",
+    marginBottom: "0.25rem",
+  },
+  profileValue: {
+    fontSize: "1rem",
+    color: "#1e293b",
+    fontWeight: "600",
+  },
+  formCard: {
+    backgroundColor: "white",
+    padding: "2rem",
+    borderRadius: "8px",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+    marginBottom: "2rem",
+  },
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: "1.5rem",
+    marginBottom: "1.5rem",
+  },
+  primaryButton: {
+    width: "100%",
+    padding: "0.875rem",
+    backgroundColor: "#003478",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    fontSize: "1rem",
+    fontWeight: "600",
+    cursor: "pointer",
+  },
+  resultsCard: {
+    backgroundColor: "white",
+    padding: "2rem",
+    borderRadius: "8px",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  resultsHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "1.5rem",
+  },
+  resultsTitle: {
+    fontSize: "1.25rem",
+    fontWeight: "700",
+    color: "#1e293b",
+  },
+  downloadButton: {
+    padding: "0.625rem 1.5rem",
+    backgroundColor: "#059669",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "600",
+  },
+  resultsList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "1rem",
+  },
+  resultItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "1rem",
+    padding: "1rem",
+    backgroundColor: "#f8fafc",
+    borderRadius: "6px",
+    borderLeft: "3px solid #003478",
+  },
+  resultNumber: {
+    fontWeight: "700",
+    color: "#003478",
+    width: "30px",
+  },
+  resultContent: {
+    display: "flex",
+    flexDirection: "column",
+  },
+  resultLabel: {
+    fontSize: "0.85rem",
+    color: "#64748b",
+  },
+  resultValue: {
+    fontSize: "0.95rem",
+    fontWeight: "600",
+    color: "#1e293b",
+  },
+  errorText: {
+    color: "#991b1b",
+  },
+  comingSoonCard: {
+    backgroundColor: "white",
+    padding: "3rem 2rem",
+    borderRadius: "8px",
+    textAlign: "center",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  },
+  comingSoonTitle: {
+    fontSize: "1.5rem",
+    fontWeight: "700",
+    color: "#1e293b",
+    marginTop: "1rem",
+  },
+  comingSoonText: {
+    color: "#64748b",
+    marginTop: "0.5rem",
+  },
+  loadingContainer: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f8fafc",
+  },
+  spinner: {
+    width: "50px",
+    height: "50px",
+    border: "4px solid #e2e8f0",
+    borderTop: "4px solid #003478",
+    borderRadius: "50%",
+    animation: "spin 1s linear infinite",
+    marginBottom: "1rem",
+  },
+  loadingText: {
+    color: "#64748b",
+    fontSize: "1rem",
+  },
+};
