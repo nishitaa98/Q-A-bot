@@ -1,0 +1,766 @@
+import { useState } from "react";
+import { Menu, LogOut, Home, Zap, DollarSign, FileText } from "lucide-react";
+
+export default function SBIApp() {
+  const [currentPage, setCurrentPage] = useState("welcome");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userName, setUserName] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeService, setActiveService] = useState("home");
+  
+  // Form states for login/register
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  
+  // CIF form states
+  const [region, setRegion] = useState("O");
+  const [noCif, setNoCif] = useState(1);
+  const [accType, setAccType] = useState("PCIF");
+  const [cifResponse, setCifResponse] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // Login handler
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (email && password) {
+      setUserName(email.split("@")[0]);
+      setIsLoggedIn(true);
+      setCurrentPage("dashboard");
+      setEmail("");
+      setPassword("");
+    }
+  };
+
+  // Register handler
+  const handleRegister = (e) => {
+    e.preventDefault();
+    if (email && password && confirmPassword && password === confirmPassword) {
+      setUserName(email.split("@")[0]);
+      setIsLoggedIn(true);
+      setCurrentPage("dashboard");
+      setEmail("");
+      setPassword("");
+      setConfirmPassword("");
+    }
+  };
+
+  // Logout handler
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setCurrentPage("welcome");
+    setUserName("");
+    setActiveService("home");
+  };
+
+  // CIF submit handler
+  const handleCifSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    const url = `http://10.1.161.199:5050/create_cif/`;
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          region: region,
+          no_cif: parseInt(noCif, 10),
+          acc_type: accType,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`API returned an error: ${res.status} ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      setCifResponse(data);
+    } catch (error) {
+      console.error("Fetch error:", error);
+      setCifResponse([{ res_data: JSON.stringify({ ERROR_DESCRIPTION: error.message }) }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Download CSV
+  const downloadCsv = () => {
+    if (!cifResponse || cifResponse.length === 0) {
+      alert("No data to download.");
+      return;
+    }
+
+    const headers = ["Customer Number"];
+    let csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n";
+
+    cifResponse.forEach((item) => {
+      try {
+        const parsedResData = JSON.parse(item.res_data);
+        const row = [parsedResData.CUSTOMER_NUMBER || ""].map((field) => `"${field}"`).join(",");
+        csvContent += row + "\n";
+      } catch (e) {
+        console.error("Error parsing res_data for CSV:", e);
+      }
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "cif_data.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Welcome Page
+  if (currentPage === "welcome" && !isLoggedIn) {
+    return (
+      <div style={styles.welcomeContainer}>
+        <nav style={styles.navbar}>
+          <div style={styles.navBrand}>
+            <span style={styles.brandText}>SBI Bank</span>
+          </div>
+          <div style={styles.navLinks}>
+            <button onClick={() => setCurrentPage("login")} style={styles.navBtn}>
+              Login
+            </button>
+            <button onClick={() => setCurrentPage("register")} style={styles.navBtnPrimary}>
+              Register
+            </button>
+          </div>
+        </nav>
+
+        <div style={styles.heroSection}>
+          <h1 style={styles.heroTitle}>Welcome to SBI Bank Services</h1>
+          <p style={styles.heroSubtitle}>Manage your banking needs efficiently</p>
+          <div style={styles.heroButtons}>
+            <button onClick={() => setCurrentPage("login")} style={styles.primaryBtn}>
+              Get Started
+            </button>
+          </div>
+        </div>
+
+        <footer style={styles.footer}>
+          <p>© 2025 State Bank of India (SBI). All rights reserved.</p>
+        </footer>
+      </div>
+    );
+  }
+
+  // Login Page
+  if (currentPage === "login" && !isLoggedIn) {
+    return (
+      <div style={styles.authContainer}>
+        <nav style={styles.navbar}>
+          <div style={styles.navBrand}>
+            <span style={styles.brandText}>SBI Bank</span>
+          </div>
+          <button onClick={() => setCurrentPage("welcome")} style={styles.backBtn}>
+            Back
+          </button>
+        </nav>
+
+        <div style={styles.authFormContainer}>
+          <div style={styles.authForm}>
+            <h2 style={styles.authTitle}>Login</h2>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+            <button onClick={handleLogin} style={styles.submitBtn}>
+              Login
+            </button>
+            <p style={styles.switchAuth}>
+              Don't have an account?{" "}
+              <span onClick={() => setCurrentPage("register")} style={styles.linkBtn}>
+                Register here
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <footer style={styles.footer}>
+          <p>© 2025 State Bank of India (SBI). All rights reserved.</p>
+        </footer>
+      </div>
+    );
+  }
+
+  // Register Page
+  if (currentPage === "register" && !isLoggedIn) {
+    return (
+      <div style={styles.authContainer}>
+        <nav style={styles.navbar}>
+          <div style={styles.navBrand}>
+            <span style={styles.brandText}>SBI Bank</span>
+          </div>
+          <button onClick={() => setCurrentPage("welcome")} style={styles.backBtn}>
+            Back
+          </button>
+        </nav>
+
+        <div style={styles.authFormContainer}>
+          <div style={styles.authForm}>
+            <h2 style={styles.authTitle}>Register</h2>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Confirm Password</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                style={styles.input}
+                required
+              />
+            </div>
+            <button onClick={handleRegister} style={styles.submitBtn}>
+              Register
+            </button>
+            <p style={styles.switchAuth}>
+              Already have an account?{" "}
+              <span onClick={() => setCurrentPage("login")} style={styles.linkBtn}>
+                Login here
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <footer style={styles.footer}>
+          <p>© 2025 State Bank of India (SBI). All rights reserved.</p>
+        </footer>
+      </div>
+    );
+  }
+
+  // Dashboard Page
+  if (isLoggedIn) {
+    return (
+      <div style={styles.dashboardContainer}>
+        <nav style={styles.navbar}>
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={styles.menuBtn}>
+            <Menu size={24} />
+          </button>
+          <div style={styles.navBrand}>
+            <span style={styles.brandText}>SBI Bank Dashboard</span>
+          </div>
+          <div style={styles.navRight}>
+            <span style={styles.userName}>Welcome, {userName}</span>
+            <button onClick={handleLogout} style={styles.logoutBtn}>
+              <LogOut size={20} />
+            </button>
+          </div>
+        </nav>
+
+        <div style={styles.mainContainer}>
+          {/* Sidebar */}
+          <aside style={{ ...styles.sidebar, display: sidebarOpen ? "flex" : "none" }}>
+            <div style={styles.sidebarContent}>
+              <button
+                onClick={() => setActiveService("home")}
+                style={{
+                  ...styles.sidebarBtn,
+                  backgroundColor: activeService === "home" ? "#003478" : "transparent",
+                  color: activeService === "home" ? "white" : "#fff",
+                }}
+              >
+                <Home size={20} />
+                Dashboard
+              </button>
+              <button
+                onClick={() => setActiveService("cif")}
+                style={{
+                  ...styles.sidebarBtn,
+                  backgroundColor: activeService === "cif" ? "#003478" : "transparent",
+                  color: activeService === "cif" ? "white" : "#fff",
+                }}
+              >
+                <FileText size={20} />
+                CIF
+              </button>
+              <button
+                onClick={() => setActiveService("ccod")}
+                style={{
+                  ...styles.sidebarBtn,
+                  backgroundColor: activeService === "ccod" ? "#003478" : "transparent",
+                  color: activeService === "ccod" ? "white" : "#fff",
+                }}
+              >
+                <DollarSign size={20} />
+                CCOD
+              </button>
+              <button
+                onClick={() => setActiveService("deposit")}
+                style={{
+                  ...styles.sidebarBtn,
+                  backgroundColor: activeService === "deposit" ? "#003478" : "transparent",
+                  color: activeService === "deposit" ? "white" : "#fff",
+                }}
+              >
+                <Zap size={20} />
+                Deposit
+              </button>
+              <div style={styles.sidebarSpacer}></div>
+              <button onClick={handleLogout} style={styles.logoutSidebarBtn}>
+                <LogOut size={20} />
+                Logout
+              </button>
+            </div>
+          </aside>
+
+          {/* Main Content */}
+          <main style={styles.content}>
+            {activeService === "home" && (
+              <div style={styles.serviceContainer}>
+                <h1 style={styles.serviceTitle}>Dashboard</h1>
+                <div style={styles.welcomeBox}>
+                  <p>Welcome to your SBI Bank Dashboard, {userName}!</p>
+                  <p>Select a service from the sidebar to get started.</p>
+                </div>
+              </div>
+            )}
+
+            {activeService === "cif" && (
+              <div style={styles.serviceContainer}>
+                <h1 style={styles.serviceTitle}>Create CIF</h1>
+                <div style={styles.form}>
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>Region:</label>
+                    <select
+                      value={region}
+                      onChange={(e) => setRegion(e.target.value)}
+                      style={styles.input}
+                    >
+                      <option value="X">X - UAT</option>
+                      <option value="O">O - UAT</option>
+                      <option value="Y">Y - UAT</option>
+                      <option value="Z">Z - UAT</option>
+                      <option value="K">K - Pre-Prod</option>
+                      <option value="J">J - Pre-Prod</option>
+                      <option value="R1">R1 - Pre-Prod</option>
+                      <option value="Y2">Y2 - Pre-Prod</option>
+                      <option value="L">L - Pre-Prod</option>
+                      <option value="C">C - Pre-Prod</option>
+                    </select>
+                  </div>
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>No. of CIF:</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={noCif}
+                      onChange={(e) => setNoCif(e.target.value)}
+                      style={styles.input}
+                      required
+                    />
+                  </div>
+                  <div style={styles.formGroup}>
+                    <label style={styles.label}>Account Type:</label>
+                    <select
+                      value={accType}
+                      onChange={(e) => setAccType(e.target.value)}
+                      style={styles.input}
+                    >
+                      <option value="PCIF">Personal CIF Creation</option>
+                      <option value="NPCIF">Non-Personal CIF Creation</option>
+                    </select>
+                  </div>
+                  <button onClick={handleCifSubmit} style={styles.submitBtn} disabled={loading}>
+                    {loading ? "Submitting..." : "Submit"}
+                  </button>
+                </div>
+
+                {cifResponse && cifResponse.length > 0 && (
+                  <div style={styles.responseContainer}>
+                    <button onClick={downloadCsv} style={styles.downloadBtn}>
+                      Download CSV
+                    </button>
+                    {cifResponse.map((item, index) => {
+                      try {
+                        const parsedResData = JSON.parse(item.res_data);
+                        return (
+                          <div key={index} style={styles.resultItem}>
+                            <p>Customer Number: {parsedResData.CUSTOMER_NUMBER}</p>
+                          </div>
+                        );
+                      } catch (e) {
+                        return (
+                          <div key={index} style={styles.resultItem}>
+                            <p>Error parsing res_data: {item.res_data}</p>
+                          </div>
+                        );
+                      }
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeService === "ccod" && (
+              <div style={styles.serviceContainer}>
+                <h1 style={styles.serviceTitle}>CCOD Services</h1>
+                <div style={styles.comingSoonBox}>
+                  <p>CCOD Services - Coming Soon</p>
+                </div>
+              </div>
+            )}
+
+            {activeService === "deposit" && (
+              <div style={styles.serviceContainer}>
+                <h1 style={styles.serviceTitle}>Deposit Services</h1>
+                <div style={styles.comingSoonBox}>
+                  <p>Deposit Services - Coming Soon</p>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+
+        <footer style={styles.footer}>
+          <p>© 2025 State Bank of India (SBI). All rights reserved.</p>
+        </footer>
+      </div>
+    );
+  }
+}
+
+const styles = {
+  welcomeContainer: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    backgroundColor: "#f5f5f5",
+  },
+  navbar: {
+    backgroundColor: "#003478",
+    color: "white",
+    padding: "1rem 2rem",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+  },
+  navBrand: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  brandText: {
+    fontSize: "1.5rem",
+    fontWeight: "bold",
+  },
+  navLinks: {
+    display: "flex",
+    gap: "1rem",
+  },
+  navBtn: {
+    padding: "0.5rem 1rem",
+    border: "2px solid white",
+    backgroundColor: "transparent",
+    color: "white",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    fontWeight: "500",
+    transition: "all 0.3s",
+  },
+  navBtnPrimary: {
+    padding: "0.5rem 1rem",
+    border: "none",
+    backgroundColor: "#FF6B6B",
+    color: "white",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    fontWeight: "500",
+  },
+  navRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "1rem",
+  },
+  userName: {
+    fontSize: "1rem",
+  },
+  heroSection: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    textAlign: "center",
+    padding: "2rem",
+  },
+  heroTitle: {
+    fontSize: "3rem",
+    fontWeight: "bold",
+    marginBottom: "1rem",
+    color: "#003478",
+  },
+  heroSubtitle: {
+    fontSize: "1.2rem",
+    color: "#666",
+    marginBottom: "2rem",
+  },
+  heroButtons: {
+    display: "flex",
+    gap: "1rem",
+    justifyContent: "center",
+  },
+  primaryBtn: {
+    padding: "1rem 2rem",
+    backgroundColor: "#003478",
+    color: "white",
+    border: "none",
+    borderRadius: "4px",
+    fontSize: "1rem",
+    fontWeight: "bold",
+    cursor: "pointer",
+  },
+  authContainer: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    backgroundColor: "#f5f5f5",
+  },
+  backBtn: {
+    padding: "0.5rem 1rem",
+    border: "2px solid white",
+    backgroundColor: "transparent",
+    color: "white",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "1rem",
+  },
+  authFormContainer: {
+    flex: 1,
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: "2rem",
+  },
+  authForm: {
+    backgroundColor: "white",
+    padding: "2rem",
+    borderRadius: "8px",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+    width: "100%",
+    maxWidth: "400px",
+  },
+  authTitle: {
+    marginBottom: "1.5rem",
+    color: "#003478",
+  },
+  formGroup: {
+    marginBottom: "1rem",
+  },
+  label: {
+    display: "block",
+    marginBottom: "0.5rem",
+    fontWeight: "500",
+    color: "#333",
+  },
+  input: {
+    width: "100%",
+    padding: "0.75rem",
+    border: "1px solid #ddd",
+    borderRadius: "4px",
+    fontSize: "1rem",
+    boxSizing: "border-box",
+  },
+  submitBtn: {
+    width: "100%",
+    padding: "0.75rem",
+    backgroundColor: "#003478",
+    color: "white",
+    border: "none",
+    borderRadius: "4px",
+    fontSize: "1rem",
+    fontWeight: "bold",
+    cursor: "pointer",
+    marginTop: "1rem",
+  },
+  switchAuth: {
+    textAlign: "center",
+    marginTop: "1rem",
+    color: "#666",
+  },
+  linkBtn: {
+    color: "#003478",
+    cursor: "pointer",
+    fontWeight: "bold",
+    textDecoration: "underline",
+  },
+  dashboardContainer: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    backgroundColor: "#f5f5f5",
+  },
+  mainContainer: {
+    display: "flex",
+    flex: 1,
+  },
+  sidebar: {
+    width: "250px",
+    backgroundColor: "#003478",
+    color: "white",
+    display: "flex",
+    flexDirection: "column",
+    padding: "1rem 0",
+    boxShadow: "2px 0 8px rgba(0,0,0,0.1)",
+  },
+  sidebarContent: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+    flex: 1,
+    padding: "0 0.5rem",
+  },
+  sidebarBtn: {
+    padding: "1rem",
+    border: "none",
+    backgroundColor: "transparent",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "1rem",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    borderRadius: "4px",
+    transition: "all 0.3s",
+  },
+  logoutSidebarBtn: {
+    padding: "1rem",
+    border: "none",
+    backgroundColor: "rgba(255,107,107,0.2)",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "1rem",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    borderRadius: "4px",
+  },
+  sidebarSpacer: {
+    flex: 1,
+  },
+  menuBtn: {
+    backgroundColor: "transparent",
+    border: "none",
+    color: "white",
+    cursor: "pointer",
+    display: "none",
+  },
+  logoutBtn: {
+    backgroundColor: "#FF6B6B",
+    border: "none",
+    color: "white",
+    padding: "0.5rem",
+    borderRadius: "4px",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+  },
+  content: {
+    flex: 1,
+    padding: "2rem",
+    overflowY: "auto",
+  },
+  serviceContainer: {
+    backgroundColor: "white",
+    borderRadius: "8px",
+    padding: "2rem",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+  },
+  serviceTitle: {
+    marginBottom: "1.5rem",
+    color: "#003478",
+  },
+  welcomeBox: {
+    padding: "1.5rem",
+    backgroundColor: "#f0f8ff",
+    borderRadius: "4px",
+    border: "1px solid #ddd",
+  },
+  comingSoonBox: {
+    padding: "1.5rem",
+    backgroundColor: "#fff3cd",
+    borderRadius: "4px",
+    border: "1px solid #ddd",
+  },
+  form: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "1rem",
+    marginBottom: "1.5rem",
+  },
+  responseContainer: {
+    marginTop: "2rem",
+    padding: "1rem",
+    backgroundColor: "#f9f9f9",
+    borderRadius: "4px",
+  },
+  downloadBtn: {
+    padding: "0.75rem 1.5rem",
+    backgroundColor: "#28a745",
+    color: "white",
+    border: "none",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "1rem",
+    marginBottom: "1rem",
+  },
+  resultItem: {
+    padding: "1rem",
+    backgroundColor: "white",
+    marginBottom: "0.5rem",
+    borderRadius: "4px",
+    border: "1px solid #ddd",
+  },
+  footer: {
+    backgroundColor: "#003478",
+    color: "white",
+    textAlign: "center",
+    padding: "1rem",
+    marginTop: "auto",
+  },
+};
